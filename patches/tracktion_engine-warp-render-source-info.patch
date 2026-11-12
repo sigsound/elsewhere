@@ -1,0 +1,17 @@
+--- a/modules/tracktion_engine/model/clips/tracktion_AudioClipBase.cpp	2026-10-15 16:05:06
++++ b/modules/tracktion_engine/model/clips/tracktion_AudioClipBase.cpp	2026-10-15 16:05:06
+@@ -2387,8 +2387,14 @@
+     // this is of course a massive hack because it assumes that the rendered file will have the same sample rate etc.
+ 
+     if (needsRender())
++    {
+         if (auto sourceItem = sourceFileReference.getSourceProjectItem())
+             return AudioFile (edit.engine, sourceItem->getSourceFile()).getInfo();
++
++        // A clip using a file directly (not a project item): the rendered file doesn't exist
++        // yet, so describe the original. Otherwise warp renders get no samples to work from.
++        return AudioFile (edit.engine, getOriginalFile()).getInfo();
++    }
+ 
+     return getAudioFile().getInfo();
+ }

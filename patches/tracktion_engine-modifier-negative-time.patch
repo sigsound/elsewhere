@@ -1,0 +1,17 @@
+diff --git a/modules/tracktion_engine/model/automation/modifiers/tracktion_ModifierInternal.h b/modules/tracktion_engine/model/automation/modifiers/tracktion_ModifierInternal.h
+index 0346c95d1f0..ab6987cbda2 100644
+--- a/modules/tracktion_engine/model/automation/modifiers/tracktion_ModifierInternal.h
++++ b/modules/tracktion_engine/model/automation/modifiers/tracktion_ModifierInternal.h
+@@ -67,7 +67,11 @@ struct Ramp
+ 
+     void setPosition (float newPosition) noexcept
+     {
+-        jassert (juce::isPositiveAndBelow (newPosition, rampDuration));
++        // Wrap rather than assert: edit times can be negative (count-in, pre-roll)
++        newPosition = std::fmod (newPosition, rampDuration);
++        if (newPosition < 0.0f)
++            newPosition += rampDuration;
++
+         rampPos = juce::jlimit (0.0f, rampDuration, newPosition) / rampDuration;
+     }
+ 

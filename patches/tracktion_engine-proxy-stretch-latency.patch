@@ -1,0 +1,95 @@
+diff --git a/modules/tracktion_engine/model/clips/tracktion_AudioClipBase.cpp b/modules/tracktion_engine/model/clips/tracktion_AudioClipBase.cpp
+index 23657cac089..cc54b469164 100644
+--- a/modules/tracktion_engine/model/clips/tracktion_AudioClipBase.cpp
++++ b/modules/tracktion_engine/model/clips/tracktion_AudioClipBase.cpp
+@@ -2128,6 +2128,13 @@ struct StretchSegment
+ 
+             timestretcher.setSpeedAndPitch ((float) (1.0 / segment.getStretchRatio()),
+                                             segment.getTranspose());
++
++            // Stretchers that report latency (Signalsmith) start their output that late: drop
++            // it so the proxy lines up with the source, as the real-time path does. The input
++            // side of it is in source samples, so it's longer in the output when slowed down.
++            const auto outputLatency = timestretcher.getOutputLatencySamples();
++            latencyToSkip = outputLatency + juce::roundToInt ((timestretcher.getLatencySamples() - outputLatency)
++                                                              / segment.getStretchRatio());
+         }
+     }
+ 
+@@ -2221,6 +2228,16 @@ struct StretchSegment
+             numRead = timestretcher.flush (outs);
+         }
+ 
++        if (latencyToSkip > 0 && numRead > 0)
++        {
++            auto skip = std::min (latencyToSkip, numRead);
++            latencyToSkip -= skip;
++            numRead -= skip;
++
++            for (int i = 0; i < numChannelsToUse; ++i)
++                std::memmove (outs[i], outs[i] + skip, (size_t) numRead * sizeof (float));
++        }
++
+         readySamplesStart = 0;
+         readySamplesEnd = numRead;
+ 
+@@ -2284,7 +2301,7 @@ struct StretchSegment
+     AudioFileCache::Reader::Ptr reader;
+ 
+     const int outputBufferSize = 1024;
+-    int readySamplesStart = 0, readySamplesEnd = 0;
++    int readySamplesStart = 0, readySamplesEnd = 0, latencyToSkip = 0;
+     SampleCount readySampleOutputPos = 0;
+     const int crossfadeSamples, numChannelsToUse;
+     juce::AudioBuffer<float> fifo { numChannelsToUse, outputBufferSize };
+diff --git a/modules/tracktion_engine/timestretch/tracktion_TimeStretch.cpp b/modules/tracktion_engine/timestretch/tracktion_TimeStretch.cpp
+index 26fd3d15d2e..ba7a2864a6b 100644
+--- a/modules/tracktion_engine/timestretch/tracktion_TimeStretch.cpp
++++ b/modules/tracktion_engine/timestretch/tracktion_TimeStretch.cpp
+@@ -87,6 +87,7 @@ struct TimeStretcher::Stretcher
+     virtual int processData (const float* const* inChannels, int numSamples, float* const* outChannels) = 0;
+     virtual int flush (float* const* outChannels) = 0;
+     virtual int getLatencySamples() const { return 0; }
++    virtual int getOutputLatencySamples() const { return getLatencySamples(); }
+ };
+ 
+ //==============================================================================
+@@ -966,6 +967,11 @@ struct SignalsmithStretcher  : public TimeStretcher::Stretcher
+         return stretch.inputLatency() + stretch.outputLatency();
+     }
+ 
++    int getOutputLatencySamples() const override
++    {
++        return stretch.outputLatency();
++    }
++
+ private:
+     signalsmith::stretch::SignalsmithStretch<float> stretch;
+     int numChannels = 0;
+@@ -1383,6 +1389,11 @@ int TimeStretcher::getLatencySamples() const
+     return stretcher ? stretcher->getLatencySamples() : 0;
+ }
+ 
++int TimeStretcher::getOutputLatencySamples() const
++{
++    return stretcher ? stretcher->getOutputLatencySamples() : 0;
++}
++
+ int TimeStretcher::getLatencySamplesForMode (Mode mode, double sampleRate, bool realtime)
+ {
+     TimeStretcher temp;
+diff --git a/modules/tracktion_engine/timestretch/tracktion_TimeStretch.h b/modules/tracktion_engine/timestretch/tracktion_TimeStretch.h
+index ae18046910c..5f8bce17117 100644
+--- a/modules/tracktion_engine/timestretch/tracktion_TimeStretch.h
++++ b/modules/tracktion_engine/timestretch/tracktion_TimeStretch.h
+@@ -184,6 +184,10 @@ public:
+     */
+     int getLatencySamples() const;
+ 
++    /** The part of getLatencySamples() that's in output samples; the rest is in input samples,
++        so it lasts longer when the stretcher slows the audio down. */
++    int getOutputLatencySamples() const;
++
+     /** Returns the latency for a given mode and sample rate without creating a full stretcher.
+         Useful for reporting latency to the graph before the stretcher is initialised.
+     */

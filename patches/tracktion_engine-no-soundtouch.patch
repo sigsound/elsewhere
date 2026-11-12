@@ -1,0 +1,71 @@
+diff --git a/modules/tracktion_engine/timestretch/tracktion_TempoDetect.h b/modules/tracktion_engine/timestretch/tracktion_TempoDetect.h
+index 19dcd73c9ed..3fe5c6a27ee 100644
+--- a/modules/tracktion_engine/timestretch/tracktion_TempoDetect.h
++++ b/modules/tracktion_engine/timestretch/tracktion_TempoDetect.h
+@@ -36,7 +36,9 @@ namespace tracktion::inline engine {
+  #pragma GCC diagnostic ignored "-Wunknown-pragmas"
+ #endif
+ 
+-#include "../3rd_party/soundtouch/include/BPMDetect.h"
++#if TRACKTION_ENABLE_TIMESTRETCH_SOUNDTOUCH
++ #include "../3rd_party/soundtouch/include/BPMDetect.h"
++#endif
+ 
+ #ifdef __clang__
+  #pragma clang diagnostic pop
+@@ -46,6 +48,28 @@ namespace tracktion::inline engine {
+  #pragma GCC diagnostic pop
+ #endif
+ 
++#if ! TRACKTION_ENABLE_TIMESTRETCH_SOUNDTOUCH
++/** Tempo detection needs SoundTouch: without it, this never finds a tempo (getBpm() is -1). */
++class TempoDetect
++{
++public:
++    TempoDetect (int, double) {}
++
++    float processReader (juce::AudioFormatReader&)                      { return bpm; }
++    float processAndDetect (const float** const, int)                   { return bpm; }
++    float getBpm() const                                                { return bpm; }
++    bool isBpmSensible() const                                          { return false; }
++    static juce::Range<float> getSensibleRange()                        { return { 29, 200 }; }
++    void processSection (juce::AudioBuffer<float>&, int)                {}
++    void processSection (const float* const*, int)                      {}
++    float finishAndDetect()                                             { return bpm; }
++
++private:
++    float bpm = -1.0f;
++
++    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TempoDetect)
++};
++#else
+ /**
+     Uses the SoundTouch BPMDetect class to guess the tempo of some audio.
+ */
+@@ -137,5 +161,6 @@ private:
+ 
+     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TempoDetect)
+ };
++#endif
+ 
+ } // namespace tracktion::inline engine
+diff --git a/modules/tracktion_engine/tracktion_engine_timestretch.cpp b/modules/tracktion_engine/tracktion_engine_timestretch.cpp
+index 3a9c8719a36..b61368c454e 100644
+--- a/modules/tracktion_engine/tracktion_engine_timestretch.cpp
++++ b/modules/tracktion_engine/tracktion_engine_timestretch.cpp
+@@ -74,13 +74,14 @@
+ #include "timestretch/tracktion_ReadAheadTimeStretcher.cpp"
+ 
+ namespace tracktion::inline engine {
++   // SoundTouch is LGPL: with it disabled, none of it is built (TempoDetect becomes a stub)
++   #if TRACKTION_ENABLE_TIMESTRETCH_SOUNDTOUCH
+     #include "3rd_party/soundtouch/source/SoundTouch/BPMDetect.cpp"
+     #undef max
+     #include "3rd_party/soundtouch/source/SoundTouch/PeakFinder.cpp"
+     #undef max
+     #include "3rd_party/soundtouch/source/SoundTouch/FIFOSampleBuffer.cpp"
+ 
+-   #if TRACKTION_ENABLE_TIMESTRETCH_SOUNDTOUCH
+     #include "3rd_party/soundtouch/source/SoundTouch/AAFilter.cpp"
+     #undef PI
+     #include "3rd_party/soundtouch/source/SoundTouch/cpu_detect_x86.cpp"

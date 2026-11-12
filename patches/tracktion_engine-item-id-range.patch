@@ -1,0 +1,16 @@
+diff --git a/modules/tracktion_engine/model/edit/tracktion_Edit.h b/modules/tracktion_engine/model/edit/tracktion_Edit.h
+index e075cbda38d..f0030fd35b1 100644
+--- a/modules/tracktion_engine/model/edit/tracktion_Edit.h
++++ b/modules/tracktion_engine/model/edit/tracktion_Edit.h
+@@ -482,6 +482,11 @@ public:
+     /** Returns a new EditItemID to use for a new EditItem, avoiding some IDs. */
+     EditItemID createNewItemID (const std::vector<EditItemID>& idsToAvoid) const;
+ 
++    /** Makes new IDs start counting from the given raw value. Used to give each
++        collaborator on a shared Edit its own ID range so concurrently created items
++        can't collide. */
++    void setNextItemIDRaw (uint64_t nextRawID) const noexcept     { nextID = nextRawID; }
++
+     //==============================================================================
+     /** Returns and Clip[s] with the given linkGroupID.
+         @see Clip::setLinkGroupID

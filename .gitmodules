@@ -1,0 +1,11 @@
+[submodule "libs/tracktion_engine"]
+	path = libs/tracktion_engine
+	url = https://github.com/Tracktion/tracktion_engine.git
+	ignore = dirty
+[submodule "libs/libdatachannel"]
+	path = libs/libdatachannel
+	url = https://github.com/paullouisageneau/libdatachannel.git
+[submodule "libs/ptformat"]
+	path = libs/ptformat
+	url = https://github.com/zamaudio/ptformat.git
+	ignore = dirty

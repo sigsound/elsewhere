@@ -1,0 +1,22 @@
+{
+  "about": "Sound packs shared by Elsewhere and Somewhere. Each pack is a pack.json plus FLAC files (48 kHz stereo); see src/SoundLibrary.h. Add a pack here and both apps list it.",
+  "packs": [
+    {
+      "id": "starter",
+      "name": "Starter Sounds",
+      "description": "Drum kits (recorded and synthesised) and instruments played across the pads",
+      "credit": "Drums: Karoryfer Lecolds (CC0) and Elsewhere. Instruments: VSCO 2 Community Edition by Versilian Studios (CC0).",
+      "sizeMB": 16
+    },
+    {
+      "id": "organic",
+      "name": "Organic Sounds",
+      "description": "Strings (ensembles, solo, tremolo, pizzicato), woodwinds, brass, upright piano, pipe organ, harp, mallets, bells and textures, from VSCO 2 Community Edition (CC0)",
+      "credit": "VSCO 2 Community Edition by Versilian Studios (CC0); upright piano and organ sampled by Simon Dalzell (Ivy Audio)",
+      "url": "https://github.com/sigsound/elsewhere/releases/download/sounds-organic-2/Elsewhere-Organic-Sounds-2.zip",
+      "build": "scripts/build-organic-pack.py",
+      "sizeMB": 238,
+      "version": 2
+    }
+  ]
+}

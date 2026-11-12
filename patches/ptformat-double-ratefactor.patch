@@ -1,0 +1,29 @@
+diff --git a/ptformat.cc b/ptformat.cc
+index 27515fb..f57e449 100644
+--- a/ptformat.cc
++++ b/ptformat.cc
+@@ -512,9 +512,9 @@ PTFFormat::gen_xor_delta(uint8_t xor_value, uint8_t mul, bool negative) {
+ 
+ void
+ PTFFormat::setrates(void) {
+-	_ratefactor = 1.f;
++	_ratefactor = 1.0;
+ 	if (_sessionrate != 0) {
+-		_ratefactor = (float)_targetrate / _sessionrate;
++		_ratefactor = (double)_targetrate / _sessionrate;
+ 	}
+ }
+ 
+diff --git a/ptformat/ptformat.h b/ptformat/ptformat.h
+index 4df33be..7ffe814 100644
+--- a/ptformat/ptformat.h
++++ b/ptformat/ptformat.h
+@@ -242,7 +242,7 @@ private:
+ 	uint8_t        _version;
+ 	uint8_t*       _product;
+ 	int64_t        _targetrate;
+-	float          _ratefactor;
++	double         _ratefactor;
+ 	bool           is_bigendian;
+ 
+ 	struct block_t {
