@@ -2,9 +2,8 @@
 
 *Join me in the Extended Present, in Elsewhere.*
 
-Elsewhere is a free, open-source DAW in the spirit of Ableton Live, built for playing and producing music
-with other people remotely: share a project through Dropbox or iCloud Drive and work on it together, or
-play live with each other in real time.
+Elsewhere is a free, open-source DAW, built for playing and producing music with other people remotely: 
+share a project through Dropbox or iCloud Drive and work on it together, or play live with each other in real time.
 
 Built on [Tracktion Engine](https://github.com/Tracktion/tracktion_engine) (audio engine, plug-in hosting,
 clip launching, rendering) and [JUCE](https://juce.com) (UI, CoreAudio, VST3/AU). It ships as a universal binary
