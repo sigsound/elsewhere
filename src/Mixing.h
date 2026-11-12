@@ -66,7 +66,7 @@ namespace Mixing
         if (isReturnTrack (t) || t.isMasterTrack() || ! (t.isAudioTrack() || t.isFolderTrack()))
             return;
 
-        // Tracks inside a group send via the group, like Ableton
+        // Tracks inside a group send via the group
         if (t.isPartOfSubmix())
             return;
 
@@ -218,7 +218,7 @@ namespace Mixing
         edit.deleteTrack (&folder);
     }
 
-    /** A click on a track's solo button. Solos add up, as in Logic and Pro Tools, so soloing a
+    /** A click on a track's solo button. Solos add up, so soloing a
         guitar and then its return plays both. Cmd-click solos just this track (or, when it's
         already the only one, un-solos it). */
     inline void clickSolo (te::Track& track)

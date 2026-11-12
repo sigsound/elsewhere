@@ -273,7 +273,7 @@ private:
 };
 
 //==============================================================================
-/** Ableton-style device chain for the focused track. */
+/** The device chain for the focused track. */
 class DeviceChainView : public juce::Component,
                         private juce::ChangeListener,
                         private juce::ValueTree::Listener,
@@ -1266,7 +1266,7 @@ private:
 };
 
 //==============================================================================
-/** Bottom panel: shows either the clip editor or the device chain, like Ableton. */
+/** Bottom panel: shows either the clip editor or the device chain. */
 class DetailView : public juce::Component, private juce::ChangeListener
 {
 public:

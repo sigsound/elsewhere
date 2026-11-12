@@ -12,7 +12,7 @@ namespace elsewhere
 /**
     Hardware control surfaces. Elsewhere speaks Mackie Control (MCU), which most fader
     surfaces understand: Mackie's own, Behringer X-Touch, iCON, PreSonus FaderPort and
-    Softube Console 1 in MCU mode, and Logic and Pro Tools users' existing desks.
+    Softube Console 1 in MCU mode, and most other DAW controllers.
 
     The engine does the protocol: eight faders following the tracks shown (hidden tracks
     skipped), banking, pans, mute/solo/arm, transport keys, the jog wheel, and track names

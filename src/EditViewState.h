@@ -26,7 +26,7 @@ public:
     double gridBeats = 1.0;
     bool snapEnabled = true;
 
-    /** How dragging clips behaves, like Pro Tools' edit modes:
+    /** How dragging clips behaves (the edit modes):
             slip     clips move freely
             grid     clips snap to the grid
             shuffle  clips on a track close up: moving one slots it between the others, deleting

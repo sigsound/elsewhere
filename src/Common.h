@@ -174,7 +174,7 @@ namespace EngineHelpers
         return false;
     }
 
-    /** Like Ableton: once a Session clip plays on a track, the track plays Session clips instead of
+    /** Once a Session clip plays on a track, the track plays Session clips instead of
         its Arrangement clips until you go "back to arrangement". */
     inline bool isPlayingSessionClips (te::AudioTrack& t)   { return t.playSlotClips.get(); }
 
@@ -199,7 +199,7 @@ namespace EngineHelpers
 
     inline juce::Colour trackColourFor (int index)
     {
-        // Ableton-ish muted clip palette
+        // Muted clip palette
         static const juce::uint32 palette[] = { 0xffff9a3c, 0xfff3d34a, 0xff9ad64b, 0xff4cc9a6,
                                                 0xff4fb3ff, 0xff8f7cff, 0xffe06cd8, 0xffff6b6b,
                                                 0xffc9a27a, 0xff7fd1c7, 0xffb5c95a, 0xff6c8cff };

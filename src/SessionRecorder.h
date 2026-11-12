@@ -15,7 +15,7 @@ namespace elsewhere
     written onto the same track's timeline, at exactly the beats it played (from the
     engine's launch handles, so launch quantisation is honoured). A clip that was already
     playing when you pressed record is captured from the record point on. Whatever was
-    on the timeline underneath is replaced, as in Ableton.
+    on the timeline underneath is replaced.
 
     The tracks keep playing their Session clips afterwards; press "Back to Arrangement"
     to hear the recorded version.

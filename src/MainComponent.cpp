@@ -185,7 +185,7 @@ MainComponent::MainComponent (te::Engine& e, const juce::File& editFile, AppActi
         resized();
     };
 
-    // New projects start with one MIDI and one audio track, like Ableton's default set
+    // New projects start with one MIDI and one audio track
     // (replacing the empty track the engine creates)
     if (isNewProject)
     {
@@ -273,7 +273,7 @@ void MainComponent::setupInputs()
     project->getEdit().getTransport().ensureContextAllocated();
 }
 
-/** Ableton-style "auto arm": whichever instrument track is selected receives the MIDI keyboard. */
+/** "Auto arm": whichever instrument track is selected receives the MIDI keyboard. */
 void MainComponent::routeMidiToFocusedTrack()
 {
     auto at = dynamic_cast<te::AudioTrack*> (viewState->focusedTrack.get());
@@ -1352,7 +1352,7 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
         case cmdEditSpot:
         case cmdEditGrid:
         {
-            // F1 to F4, in the same order as Pro Tools
+            // F1 to F4: Shuffle, Slip, Spot, Grid
             static const EditViewState::EditMode modes[] = { EditViewState::EditMode::shuffle, EditViewState::EditMode::slip,
                                                              EditViewState::EditMode::spot, EditViewState::EditMode::grid };
             auto index = (int) (id - cmdEditShuffle);

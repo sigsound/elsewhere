@@ -392,7 +392,7 @@ public:
             }
             else
             {
-                // Empty-slot stop button, like Ableton
+                // Empty-slot stop button
                 g.setColour (Theme::control());
                 g.fillRoundedRectangle (button.withSizeKeepingCentre (6.0f, 6.0f), 1.0f);
             }

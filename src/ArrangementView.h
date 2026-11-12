@@ -927,7 +927,7 @@ public:
                         box.reduced (4).toNearestInt(), juce::Justification::topLeft);
         }
 
-        // Playing Session clips: the Arrangement clips on this track are silent (like Ableton's greyed-out clips)
+        // Playing Session clips: the Arrangement clips on this track are silent, so they're greyed out
         if (auto at = dynamic_cast<te::AudioTrack*> (track.get()); at != nullptr && EngineHelpers::isPlayingSessionClips (*at))
         {
             g.setColour (Colours::background.withAlpha (0.6f));
@@ -1042,7 +1042,7 @@ public:
             return;
         }
 
-        // Double-click on an empty lane creates a one-bar MIDI clip (like drawing in Ableton)
+        // Double-click on an empty lane creates a one-bar MIDI clip
         if (auto at = dynamic_cast<te::AudioTrack*> (track.get()))
         {
             auto bar = viewState.getBeatsPerBar();

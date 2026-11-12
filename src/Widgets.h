@@ -104,7 +104,7 @@ private:
 };
 
 //==============================================================================
-/** Small toggle button in the style of Ableton's track activators (M / S / ● ). */
+/** Small toggle button for track activators (M / S / ● ). */
 class SmallToggle : public juce::TextButton
 {
 public:
@@ -320,7 +320,7 @@ private:
 };
 
 //==============================================================================
-/** Draggable numeric field, like Ableton's tempo box. */
+/** Draggable numeric field, as used for the tempo. */
 class DragNumberBox : public juce::Label
 {
 public:

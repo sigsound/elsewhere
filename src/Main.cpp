@@ -706,7 +706,7 @@ public:
         o.resizable = true;
 
         // min == max hides the per-channel checkboxes: all channels are always open, and each
-        // track picks its own input (like Ableton)
+        // track picks its own input
         auto* selector = new juce::AudioDeviceSelectorComponent (engine->getDeviceManager().deviceManager,
                                                                  256, 256, 256, 256, true, true, false, false);
         selector->setSize (560, 620);
