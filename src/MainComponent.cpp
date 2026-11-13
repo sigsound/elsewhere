@@ -937,7 +937,7 @@ void MainComponent::showVersionHistory()
 void MainComponent::showNameDialog()
 {
     auto* aw = Theme::newAlertWindow ("Your Name", "Shown to collaborators and on your comments.");
-    aw->addTextEditor ("name", collab->getIdentity().name);
+    Theme::addTextField (*aw, "name", collab->getIdentity().name);
     aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
     aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
     aw->enterModalState (true, juce::ModalCallbackFunction::create ([this, aw] (int r)

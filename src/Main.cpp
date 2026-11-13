@@ -683,7 +683,7 @@ public:
         }
 
         auto* aw = Theme::newAlertWindow ("Save as Template", "Tracks, devices, sends and routing are saved. Audio clips aren't.");
-        aw->addTextEditor ("name", project.getName());
+        Theme::addTextField (*aw, "name", project.getName());
         aw->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
         aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
         aw->enterModalState (true, juce::ModalCallbackFunction::create ([this, aw] (int r)
@@ -954,6 +954,21 @@ private:
             out.setPosition (0); out.truncate();
             juce::PNGImageFormat().writeImageToStream (img, out);
         };
+
+        // A dialog with a text field, as Add Comment shows it (the field must be easy to find)
+        auto saveTextDialog = [dir] (const juce::String& name)
+        {
+            std::unique_ptr<juce::AlertWindow> aw (Theme::newAlertWindow ("Comment on Guitars", "bars 2-5"));
+            Theme::addTextField (*aw, "text", {})->setTextToShowWhenEmpty ("Write a comment", Colours::textDim);
+            aw->addButton ("Add Comment", 1);
+            aw->addButton ("Cancel", 0);
+            aw->setVisible (true);
+            auto img = aw->createComponentSnapshot (aw->getLocalBounds(), true, 2.0f);
+            juce::FileOutputStream out (dir.getChildFile (name + ".png"));
+            out.setPosition (0); out.truncate();
+            juce::PNGImageFormat().writeImageToStream (img, out);
+        };
+        saveTextDialog ("text_dialog");
 
         // Optional: ELSEWHERE_TEST_EXPORT=<file.wav> renders the project, to check the audio really plays
         auto exportPath = juce::SystemStats::getEnvironmentVariable ("ELSEWHERE_TEST_EXPORT", {});
@@ -1320,12 +1335,12 @@ private:
         }
 
         commandManager.invokeDirectly (cmdToggleView, false);
-        juce::Timer::callAfterDelay (800, [this, save, saveAbout]
+        juce::Timer::callAfterDelay (800, [this, save, saveAbout, saveTextDialog]
         {
             mainComponent->getProject().getEdit().getTransport().setPosition (6s);
             save ("arrangement");
             commandManager.invokeDirectly (cmdToggleDetail, false);
-            juce::Timer::callAfterDelay (800, [this, save, saveAbout]
+            juce::Timer::callAfterDelay (800, [this, save, saveAbout, saveTextDialog]
             {
                 save ("arrangement_clip");
 
@@ -1334,10 +1349,11 @@ private:
                     return quit();
 
                 switchTheme (Themes::light, true);
-                juce::Timer::callAfterDelay (800, [this, save, saveAbout]
+                juce::Timer::callAfterDelay (800, [this, save, saveAbout, saveTextDialog]
                 {
                     save ("arrangement_clip_light");
                     saveAbout ("about_light");
+                    saveTextDialog ("text_dialog_light");
                     commandManager.invokeDirectly (cmdToggleView, false);
                     juce::Timer::callAfterDelay (800, [this, save]
                     {

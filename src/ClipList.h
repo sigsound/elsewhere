@@ -40,8 +40,7 @@ public:
         markersTab.onClick = [this] { setTab (Tab::markers); };
 
         filter.setTextToShowWhenEmpty ("Find", Colours::textDim);
-        filter.setColour (juce::TextEditor::backgroundColourId, Colours::panelDark);
-        filter.setColour (juce::TextEditor::outlineColourId, Colours::outline);
+        filter.setIndents (10, filter.getTopIndent());
         filter.onTextChange = [this] { rebuild(); };
         filter.onEscapeKey = [this] { filter.clear(); rebuild(); unfocusAllComponents(); };
         addAndMakeVisible (filter);
@@ -295,7 +294,7 @@ private:
     void renameClip (te::Clip& c)
     {
         auto* aw = Theme::newAlertWindow ("Rename Clip", {});
-        aw->addTextEditor ("name", c.getName());
+        Theme::addTextField (*aw, "name", c.getName());
         aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
         aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
         aw->enterModalState (true, juce::ModalCallbackFunction::create ([aw, ref = te::Clip::Ptr (&c)] (int res)

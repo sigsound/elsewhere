@@ -153,7 +153,7 @@ namespace Comments
                               const juce::String& targetName, std::function<void (const juce::String&)> onAdded = {})
     {
         auto* aw = Theme::newAlertWindow ("Comment on " + targetName, describeRange (edit, range));
-        aw->addTextEditor ("text", {});
+        Theme::addTextField (*aw, "text", {})->setTextToShowWhenEmpty ("Write a comment", Colours::textDim);
         aw->addButton ("Add Comment", 1, juce::KeyPress (juce::KeyPress::returnKey));
         aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
         aw->enterModalState (true, juce::ModalCallbackFunction::create ([&edit, who, target, range, aw, onAdded] (int r)
@@ -330,7 +330,6 @@ namespace Comments
                 return;
 
             auto r = pageArea.reduced (22, 16);
-            auto dim = c->isResolved() ? 0.5f : 1.0f;
 
             g.setColour (Colours::textDim);
             g.setFont (juce::FontOptions (12.5f));
@@ -342,12 +341,12 @@ namespace Comments
             r.removeFromTop (8);
 
             juce::AttributedString text;
-            text.append (c->getText(), juce::FontOptions (17.0f), Colours::text.withMultipliedAlpha (dim));
+            text.append (c->getText(), juce::FontOptions (17.0f), c->isResolved() ? Colours::textDim : Colours::text);
             text.setWordWrap (juce::AttributedString::byWord);
             text.draw (g, r.toFloat());
 
             auto author = footer.removeFromLeft (footer.getWidth() - 190);
-            drawDisc (g, author.removeFromLeft (20).withSizeKeepingCentre (18, 18).toFloat(), c->getColour(), juce::Colours::white,
+            drawDisc (g, author.removeFromLeft (20).withSizeKeepingCentre (18, 18).toFloat(), c->getColour(), Theme::inkOn (c->getColour()),
                       c->getAuthor().substring (0, 1).toUpperCase());
             author.removeFromLeft (8);
             g.setColour (Colours::textDim);
@@ -413,7 +412,7 @@ namespace Comments
                     auto& c = book->notes[(size_t) i];
                     auto r = juce::Rectangle<int> (0, i * rowH, getWidth(), rowH).reduced (0, 2);
                     auto isOpen = i == book->openIndex;
-                    auto ink = Colours::text.withMultipliedAlpha (c.isResolved() ? 0.5f : 1.0f);
+                    auto ink = c.isResolved() ? Colours::textDim : Colours::text;   // dimmed, still readable
 
                     if (isOpen)
                     {
@@ -598,11 +597,13 @@ namespace Comments
                     g.drawRoundedRectangle (band.reduced (0.5f), band.getHeight() * 0.5f, 1.0f);
                 }
 
-                drawDisc (g, band.withWidth (band.getHeight()), Colours::text.withAlpha (alpha), Colours::textInverse, juce::String (i + 1));
+                // Resolved notes' numbers and text are dimmed with textDim, not transparency, so they stay readable
+                auto ink = notes[(size_t) i].isResolved() ? Colours::textDim : Colours::text;
+                drawDisc (g, band.withWidth (band.getHeight()), ink, Colours::textInverse, juce::String (i + 1));
 
                 if (band.getWidth() > 60.0f)
                 {
-                    g.setColour (Colours::text.withAlpha (alpha));
+                    g.setColour (ink);
                     g.setFont (juce::FontOptions (10.5f));
                     g.drawText (notes[(size_t) i].getText().upToFirstOccurrenceOf ("\n", false, false),
                                 band.withTrimmedLeft (band.getHeight() + 5.0f).withTrimmedRight (8.0f), juce::Justification::centredLeft, true);

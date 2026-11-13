@@ -265,7 +265,7 @@ private:
     static void renameTrack (te::Track& t)
     {
         auto* aw = Theme::newAlertWindow ("Rename Track", {});
-        aw->addTextEditor ("name", t.getName());
+        Theme::addTextField (*aw, "name", t.getName());
         aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
         aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
         aw->enterModalState (true, juce::ModalCallbackFunction::create ([aw, ref = te::Track::Ptr (&t)] (int res)

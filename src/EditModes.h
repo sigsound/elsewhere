@@ -159,8 +159,8 @@ namespace EditModes
         auto timeText = EngineHelpers::formatTime (start);
 
         auto* aw = Theme::newAlertWindow ("Spot Clip", "Move \"" + clip.getName() + "\" to start at:");
-        aw->addTextEditor ("bars", barsText, "Bar.Beat.16th");
-        aw->addTextEditor ("time", timeText, "Min:Sec");
+        Theme::addTextField (*aw, "bars", barsText, "Bar.Beat.16th");
+        Theme::addTextField (*aw, "time", timeText, "Min:Sec");
         aw->addButton ("Move", 1, juce::KeyPress (juce::KeyPress::returnKey));
         aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
 

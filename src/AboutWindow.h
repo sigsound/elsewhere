@@ -5,6 +5,7 @@
 
 #include "Theme.h"
 #include "AboutResources.h"
+#include "Wordmark.h"
 
 namespace elsewhere
 {
@@ -30,11 +31,9 @@ public:
         notices.setReadOnly (true);
         notices.setCaretVisible (false);
         notices.setScrollbarsShown (true);
+        notices.setIndents (10, 8);
         notices.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 11.0f, juce::Font::plain));
-        notices.setColour (juce::TextEditor::backgroundColourId, Colours::panelDark);
         notices.setColour (juce::TextEditor::textColourId, Colours::textDim);
-        notices.setColour (juce::TextEditor::outlineColourId, Colours::outline);
-        notices.setColour (juce::TextEditor::focusedOutlineColourId, Colours::outline);
         notices.setText (juce::String::fromUTF8 (AboutResources::ThirdPartyNotices_txt, AboutResources::ThirdPartyNotices_txtSize), false);
         addAndMakeVisible (notices);
 
@@ -49,9 +48,7 @@ public:
         g.drawImage (icon, r.removeFromTop (96).withSizeKeepingCentre (96, 96).toFloat(), juce::RectanglePlacement::centred);
         r.removeFromTop (10);
 
-        g.setColour (Colours::text);
-        g.setFont (juce::FontOptions (24.0f, juce::Font::bold));
-        g.drawText ("Elsewhere", r.removeFromTop (30), juce::Justification::centred);
+        Wordmark::draw (g, r.removeFromTop (30).withSizeKeepingCentre (r.getWidth(), 24).toFloat(), Colours::text);
 
         g.setColour (Colours::textDim);
         g.setFont (juce::FontOptions (13.0f));

@@ -5,6 +5,7 @@
 
 #include "EditViewState.h"
 #include "Widgets.h"
+#include "Wordmark.h"
 
 namespace elsewhere
 {
@@ -373,10 +374,9 @@ public:
     {
         g.fillAll (Colours::background);
 
-        // The wordmark, quietly, as on Somewhere
-        g.setColour (Colours::textDim);
-        g.setFont (juce::FontOptions (13.0f).withKerningFactor (0.35f));
-        g.drawText ("elsewhere", wordmark, juce::Justification::centredLeft);
+        // The wordmark, in ink
+        Wordmark::draw (g, wordmark.toFloat().withSizeKeepingCentre ((float) wordmark.getWidth(), wordmarkHeight), Colours::text,
+                        juce::RectanglePlacement::xLeft | juce::RectanglePlacement::yMid);
 
         // Collaborator chips replace the status text while someone else is in the project
         auto area = status.getBounds();
@@ -408,7 +408,7 @@ public:
         const int key = h, smallH = 26;
         auto small = [smallH] (juce::Rectangle<int> b) { return b.withSizeKeepingCentre (b.getWidth(), smallH); };
 
-        wordmark = r.removeFromLeft (112);
+        wordmark = r.removeFromLeft (juce::roundToInt (wordmarkHeight * Wordmark::aspect) + 20);
         tempo.setBounds (r.removeFromLeft (84));
         r.removeFromLeft (4);
         timeSig.setBounds (r.removeFromLeft (34));
@@ -464,6 +464,7 @@ private:
     DragNumberBox tempo { 20.0, 999.0, 2 };
     juce::TextButton tapButton { "tap" };
     juce::Rectangle<int> wordmark;
+    static constexpr float wordmarkHeight = 15.0f;
     juce::Label timeSig;
     MetronomePill metronome;
     IconButton playButton { "Play", IconButton::play(), Colours::accent },
@@ -592,7 +593,7 @@ private:
         if (auto left = getCountInBeatsLeft(); left > 0)
         {
             position.setText ("count in   " + juce::String (left), juce::dontSendNotification);
-            position.setColour (juce::Label::textColourId, Colours::record);
+            position.setColour (juce::Label::textColourId, Theme::readable (Colours::record));
         }
         else
         {
@@ -603,7 +604,7 @@ private:
 
         auto load = edit.engine.getDeviceManager().getCpuUsage();
         cpu.setText ("CPU " + juce::String (juce::roundToInt (load * 100.0f)) + "%", juce::dontSendNotification);
-        cpu.setColour (juce::Label::textColourId, load > 0.8f ? Colours::record : Colours::textDim);
+        cpu.setColour (juce::Label::textColourId, load > 0.8f ? Theme::readable (Colours::record) : Colours::textDim);
 
         refresh();
     }

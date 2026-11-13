@@ -30,14 +30,17 @@ namespace Themes
         and red only for recording. Track colours are the only other colour: twelve pigments, the
         same hues in both themes (deepened here, lifted at night), in the order of the stored
         palette (EngineHelpers::trackColourFor). Entries that share a value in one theme share it in
-        the other too, so switching theme can remap colours already set on components. */
+        the other too, so switching theme can remap colours already set on components.
+
+        Contrast (WCAG 2.1 AA): textDim reads at 4.5:1 or more on every surface, and the light
+        theme's red carries its inverse-ink label at 4.5:1. Check with Theme::contrast after a change. */
     inline const Palette light {
         "light", true,
         0xffededea, 0xffe2e2de, 0xffd5d5d0, 0xffe6e6e2, 0xffededea, 0xffd5d5d0, 0xffe6e6e2, 0xffc2c2bc,
-        0xff111112, 0xff6b6b67, 0xffededea,
-        0xff111112, 0xff111112, 0xffe0463a, 0xff111112, 0xff111112, 0xff6b6b67,
-        0xff6b6b67, 0xff111112, 0xffe0463a,
-        0xff111112, 0xff6b6b67, 0xff957260, 0xffb08a2f,
+        0xff111112, 0xff5c5c58, 0xffededea,
+        0xff111112, 0xff111112, 0xffc13c32, 0xff111112, 0xff111112, 0xff5c5c58,
+        0xff5c5c58, 0xff111112, 0xffc13c32,
+        0xff111112, 0xff5c5c58, 0xff957260, 0xffb08a2f,
         { 0xffc26b3d, 0xffb08a2f, 0xff73903f, 0xff3f8f70, 0xff4a84b8, 0xff7c69c2,
           0xffa562a7, 0xffb9667c, 0xff957260, 0xff3a8f96, 0xff7c7e78, 0xff5a6cc4 } };
 
@@ -234,7 +237,32 @@ namespace Theme
     /** Hash marks, control tracks and outlines: the grid colour, made visible enough to read. */
     inline juce::Colour control()                       { return indicator (Colours::gridBar); }
 
+    /** A text field's fill: set off from the panels and dialogs it sits in (paler by day, deeper
+        at night). Its outline (fieldOutline()) is what makes it findable. */
+    inline juce::Colour field()                         { return isLight() ? Colours::panel.interpolatedWith (juce::Colours::white, 0.8f) : Colours::background; }
+
+    /** A text field's outline: 3:1 against any surface a field sits on, including panelLight
+        (the darkest by day, the lightest at night). */
+    inline juce::Colour fieldOutline()                  { return ensureContrast (Colours::gridBar, Colours::panelLight, 3.0f); }
+
+    /** Text or a glyph on a filled colour (a disc, a chip): whichever of black or white reads better. */
+    inline juce::Colour inkOn (juce::Colour fill)
+    {
+        return contrast (juce::Colours::white, fill) >= contrast (juce::Colour (0xff111112), fill) ? juce::Colours::white : juce::Colour (0xff111112);
+    }
+
     inline const bool initialised = [] { apply (Themes::dark); return true; }();
+
+    /** Adds a text field to a dialog, inset so its text clears the field's rounded ends.
+        Use instead of AlertWindow::addTextEditor. */
+    inline juce::TextEditor* addTextField (juce::AlertWindow& aw, const juce::String& name, const juce::String& text,
+                                           const juce::String& label = {})
+    {
+        aw.addTextEditor (name, text, label);
+        auto* ed = aw.getTextEditor (name);
+        ed->setIndents (10, ed->getTopIndent());
+        return ed;
+    }
 
     /** A dialog with see-through corners, so its rounded panel shows: JUCE makes windows opaque. */
     inline juce::AlertWindow* newAlertWindow (const juce::String& title, const juce::String& message)
@@ -280,7 +308,6 @@ public:
         setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
         setColour (juce::Label::textColourId, Colours::text);
         setColour (juce::ComboBox::backgroundColourId, Colours::panelLight);
-        setColour (juce::ComboBox::outlineColourId, juce::Colours::transparentBlack);
         setColour (juce::PopupMenu::backgroundColourId, Colours::panel.withAlpha (0.99f));  // so its window can have round corners
         setColour (juce::PopupMenu::highlightedBackgroundColourId, Colours::accent);
         setColour (juce::PopupMenu::highlightedTextColourId, Colours::textInverse);
@@ -305,9 +332,14 @@ public:
         setColour (juce::TreeView::selectedItemBackgroundColourId, Colours::accent.withAlpha (0.35f));
         setColour (juce::DirectoryContentsDisplayComponent::highlightColourId, Colours::accent.withAlpha (0.35f));
         setColour (juce::DirectoryContentsDisplayComponent::textColourId, Colours::text);
-        setColour (juce::TextEditor::backgroundColourId, Colours::panelDark);
-        setColour (juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
+        // Text fields: a fill set off from the surface, an outline at 3:1 so the field can be
+        // found, and a heavier ink outline once it has focus
+        setColour (juce::TextEditor::backgroundColourId, Theme::field());
+        setColour (juce::TextEditor::outlineColourId, Theme::fieldOutline());
         setColour (juce::TextEditor::focusedOutlineColourId, Colours::accent);
+        // AlertWindow::addTextEditor gives its fields the ComboBox outline colour (our combo
+        // boxes draw none), so this is the outline of every text field in a dialog
+        setColour (juce::ComboBox::outlineColourId, Theme::fieldOutline());
         setColour (juce::ListBox::backgroundColourId, Colours::panel);
         setColour (juce::TabbedButtonBar::tabOutlineColourId, Colours::outline);
         setColour (juce::CaretComponent::caretColourId, Colours::accent);
@@ -535,8 +567,10 @@ public:
         if (c.isTransparent())
             return;
 
+        const float thickness = focused ? 2.0f : 1.0f;
         g.setColour (c);
-        g.drawRoundedRectangle (juce::Rectangle<int> (width, height).toFloat().reduced (0.5f), juce::jmin (8.0f, (float) height * 0.5f), 1.0f);
+        g.drawRoundedRectangle (juce::Rectangle<int> (width, height).toFloat().reduced (thickness * 0.5f),
+                                juce::jmin (8.0f, (float) height * 0.5f), thickness);
     }
 
     void drawScrollbar (juce::Graphics& g, juce::ScrollBar&, int x, int y, int width, int height,

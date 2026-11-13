@@ -42,6 +42,8 @@ Pick **Elsewhere (Debug)** to track down problems (it stops on failed sanity che
 
 The icon is Somewhere's Orbit mark, black on white or white on black. On a Mac it comes from `resources/AppIcon.icon`, an Icon Composer file with light, dark and tinted versions (macOS 26 and later follow the system appearance; older versions show the light one). Windows and the About window use `resources/AppIcon.png`, which `scripts/make-icon.py` makes from `resources/Logo.png` (needs Pillow). Rebuild after changing either.
 
+The wordmark in the transport bar and the About window is `resources/Wordmark.svg`, a single black shape that Elsewhere recolours to the theme's ink. Replace it with another single-colour SVG and rebuild.
+
 ### Signing
 
 Builds from source are signed locally, which is all you need to run them. Official releases are signed and

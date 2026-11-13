@@ -221,7 +221,7 @@ private:
         m.addItem ("Save Preset...", [p]
         {
             auto* aw = Theme::newAlertWindow ("Save Preset", "Name this " + p->getName() + " preset:");
-            aw->addTextEditor ("name", "My " + p->getName());
+            Theme::addTextField (*aw, "name", "My " + p->getName());
             aw->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
             aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
             aw->enterModalState (true, juce::ModalCallbackFunction::create ([p, aw] (int r)
