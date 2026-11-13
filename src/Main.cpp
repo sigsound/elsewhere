@@ -325,9 +325,13 @@ public:
         }
 
         // --showcase <dir>: the README screenshots, from a demo project (src/Showcase.h)
+        // Add --device-shots for a picture of each built-in device's panel instead (for design work)
         if (commandLine.contains ("--showcase"))
         {
-            juce::Timer::callAfterDelay (2500, [this] { takeShowcase (showcaseDir()); });
+            if (commandLine.contains ("--device-shots"))
+                juce::Timer::callAfterDelay (2500, [this] { takeDeviceShots (showcaseDir()); });
+            else
+                juce::Timer::callAfterDelay (2500, [this] { takeShowcase (showcaseDir()); });
             return;
         }
 
@@ -1021,6 +1025,63 @@ private:
             juce::Timer::callAfterDelay (900, [run, i] { (*run) (i + 1); });
         };
         (*run) (0);
+    }
+
+    /** <dir>/device_<type>.png (and _light) for each built-in device as the chain shows it, at the
+        default detail height, plus an LFO. On the demo song's keys track, one device at a time. */
+    void takeDeviceShots (juce::File dir)
+    {
+        dir.createDirectory();
+        auto* mc = mainComponent;
+        if (mc == nullptr)
+            return quit();
+
+        auto tracks = Showcase::build (*mc);
+        auto& track = *tracks.keys;
+        constexpr int height = 200;
+
+        auto save = [dir] (juce::Component& c, const juce::String& name)
+        {
+            auto img = c.createComponentSnapshot (c.getLocalBounds(), true, 2.0f);
+            juce::FileOutputStream out (dir.getChildFile (name + ".png"));
+            out.setPosition (0); out.truncate();
+            juce::PNGImageFormat().writeImageToStream (img, out);
+        };
+
+        for (auto theme : { &Themes::dark, &Themes::light })
+        {
+            switchTheme (*theme, true);
+            const auto suffix = theme == &Themes::light ? juce::String ("_light") : juce::String();
+
+            for (auto& d : DeviceRegistry::getAll())
+            {
+                if (d.hidden)
+                    continue;
+
+                if (auto p = DeviceRegistry::create (track.edit, d.type))
+                {
+                    track.pluginList.insertPlugin (p, 0, nullptr);
+                    {
+                        DevicePanel panel (*p);
+                        panel.setSize (panel.getIdealWidth(), height);
+                        save (panel, "device_" + d.type + suffix);
+                    }
+                    p->deleteFromParent();
+                }
+            }
+
+            if (auto lfo = Modulators::addLFO (track))
+            {
+                {
+                    LfoPanel panel (track, *lfo);
+                    panel.setSize (LfoPanel::idealWidth, height);
+                    save (panel, "device_lfo" + suffix);
+                }
+                lfo->remove();
+            }
+        }
+
+        quit();
     }
 
     void takeSnapshots (juce::File dir)
