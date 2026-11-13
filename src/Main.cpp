@@ -938,9 +938,12 @@ private:
     {
         dir.createDirectory();
 
-        auto save = [this, dir] (const juce::String& name)
+        // ELSEWHERE_TEST_SCALE=2: render at Retina resolution (for README screenshots)
+        const auto scale = (float) juce::jlimit (1.0, 3.0, juce::SystemStats::getEnvironmentVariable ("ELSEWHERE_TEST_SCALE", "1").getDoubleValue());
+
+        auto save = [this, dir, scale] (const juce::String& name)
         {
-            auto img = window->getContentComponent()->createComponentSnapshot (window->getContentComponent()->getLocalBounds(), true, 1.0f);
+            auto img = window->getContentComponent()->createComponentSnapshot (window->getContentComponent()->getLocalBounds(), true, scale);
             juce::FileOutputStream out (dir.getChildFile (name + ".png"));
             out.setPosition (0); out.truncate();
             juce::PNGImageFormat().writeImageToStream (img, out);

@@ -1,4 +1,9 @@
-# Elsewhere
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-on-dark.svg">
+    <img src="docs/images/logo-on-light.svg" alt="Elsewhere" width="480">
+  </picture>
+</h1>
 
 *Join me in the Extended Present, in Elsewhere.*
 
@@ -44,6 +49,8 @@ The icon is Somewhere's Orbit mark, black on white or white on black. On a Mac i
 
 The wordmark in the transport bar and the About window is `resources/Wordmark.svg`, a single black shape that Elsewhere recolours to the theme's ink. Replace it with another single-colour SVG and rebuild.
 
+`resources/Mark.svg` is the Orbit mark as a vector, and `docs/images/logo-on-light.svg` and `logo-on-dark.svg` are the mark and wordmark side by side, for the README and anywhere else the full logo is needed.
+
 ### Signing
 
 Builds from source are signed locally, which is all you need to run them. Official releases are signed and
@@ -60,7 +67,7 @@ Dev flags:
 
 - **Session view**: clip-launcher grid with scenes, launch quantisation, per-track mixer strips (arm/solo/mute, fader, pan, meters), and drag-and-drop of audio loops (warped to tempo) and MIDI files into slots.
 - **Arrangement view**: timeline with bars/beats grid and snapping, clips you can move, trim, fade, split, duplicate, loop, reverse, normalize, and move between tracks, waveform display, a loop brace (drag either end's dot to resize it), follow-playhead, zoom (Cmd+scroll or pinch), and resizable tracks.
-- **Normalize**: like Logic's Normalize Region Gain. Right-click a clip (or several) → Normalize…, a track's menu → Normalize Track…, or the clip editor. Choose **Peak** (the loudest sample, in dBFS) or **Loudness** (BS.1770, in LUFS, which brings up quiet takes with a few loud spikes), a target, and, for several clips, whether they move individually, per track or all together. The dialog shows the gain change before you apply it. It sets the clip's gain rather than rewriting the audio, so it can be undone or adjusted in the clip's Gain knob.
+- **Normalize**: bring a clip to a set level. Right-click a clip (or several) → Normalize…, a track's menu → Normalize Track…, or the clip editor. Choose **Peak** (the loudest sample, in dBFS) or **Loudness** (BS.1770, in LUFS, which brings up quiet takes with a few loud spikes), a target, and, for several clips, whether they move individually, per track or all together. The dialog shows the gain change before you apply it. It sets the clip's gain rather than rewriting the audio, so it can be undone or adjusted in the clip's Gain knob.
 - **Clip editor**: drag across an audio clip's waveform to select part of it (it starts with all of it selected), then right-click to normalize, reverse, delete (or press Delete), trim to it, split at it, or comment on it. Edits split the clip at the selection's edges and leave the rest alone.
 - **Solo**: solos add up (solo a guitar, then its return, to hear both); Cmd-click a solo button to solo just that track.
 - **Piano roll**: draw, move, resize and delete notes, transpose (arrow keys), quantise (Q), and audition notes.
@@ -130,9 +137,9 @@ Put the project folder in Dropbox (or iCloud Drive / Google Drive), turn on **Fi
 
 **Phase 3: live jamming, the Extended Present ✅**
 
-Open a shared project, press **LIVE** (⌘J) and press play. When your collaborator does the same, you connect automatically. You both play to the project's tempo and hear each other exactly one interval late (1–16 bars, 4 by default), so it's always in time musically, whatever the internet delay. This is the approach NINJAM has used for years.
+Open a shared project, press **LIVE** (⌘J) and press play. When your collaborator does the same, you connect automatically. You both play to the project's tempo and hear each other exactly one interval late (1–16 bars, 4 by default), so it's always in time musically, whatever the internet delay.
 
-- **Low-latency mode** (Live tab → Mode): instead of intervals, you hear each other almost immediately, like Jamulus. Audio streams in 5 ms Opus packets (about 128 kb/s) over an unordered, never-retransmitted channel, and Opus conceals lost packets. Each player's jitter buffer adapts: it starts at about 20 ms, grows if packets arrive unevenly, and shrinks back when the connection is steady. The Live tab shows each person's estimated delay. It feels natural under about 30 ms, which usually means the same region, wired internet, and a 128-sample audio buffer. The mode is stored in the project, so everyone switches together.
+- **Low-latency mode** (Live tab → Mode): instead of intervals, you hear each other almost immediately. Audio streams in 5 ms Opus packets (about 128 kb/s) over an unordered, never-retransmitted channel, and Opus conceals lost packets. Each player's jitter buffer adapts: it starts at about 20 ms, grows if packets arrive unevenly, and shrinks back when the connection is steady. The Live tab shows each person's estimated delay. It feels natural under about 30 ms, which usually means the same region, wired internet, and a 128-sample audio buffer. The mode is stored in the project, so everyone switches together.
 - **Direct connection, no Elsewhere server:** computers connect peer-to-peer over WebRTC, encrypted, through home routers via ICE. The connection handshake travels through the shared folder (`Collab/live/`). The only outside service is Google's free public STUN server, which tells each computer its public address.
 - **What gets sent:** your master output, compressed to Ogg Vorbis (about 128 kb/s), one interval at a time. Collaborators' audio is mixed in on your master bus, with a volume and mute control per person in the **Live** tab.
 - **Tested:** `scripts/tests/live-session.sh <project folder>` runs two instances that connect through a simulated cloud folder and exchange intervals.
