@@ -1,6 +1,15 @@
 # Builds Elsewhere for Windows (x64) and packages an installer.
 # Runs on pushes to main / windows, on version tags (v0.2.0 ...), or by hand from the Actions tab.
 # Version tags also attach the installer to a draft GitHub Release.
+#
+# Signing: once Azure Artifact Signing is set up, Elsewhere.exe, ptformat.dll and the installer are
+# signed by Fuzz LLC's certificate. The job signs in to Azure with GitHub's OIDC token (no stored
+# password), through the "signing" environment, and needs these repository variables:
+#   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_SUBSCRIPTION_ID   the app registration that signs
+#   AZURE_SIGNING_ENDPOINT    e.g. https://wus2.codesigning.azure.net (the account's region)
+#   AZURE_SIGNING_ACCOUNT     the Artifact Signing account name
+#   AZURE_CERT_PROFILE        the Public Trust certificate profile name
+# Until AZURE_SIGNING_ACCOUNT is set, builds go out unsigned as before.
 name: Windows build
 
 on:
@@ -13,8 +22,14 @@ jobs:
   build:
     runs-on: windows-2022
     timeout-minutes: 120
+    # The Azure app trusts only OIDC tokens from this environment. Left off until signing is set up
+    # (environments on private repos need a paid GitHub plan; public repos always have them).
+    environment: ${{ vars.AZURE_SIGNING_ACCOUNT != '' && 'signing' || '' }}
     permissions:
       contents: write   # to create the draft release a version tag's installer goes on
+      id-token: write   # to sign in to Azure for code signing
+    env:
+      SIGN: ${{ vars.AZURE_SIGNING_ACCOUNT != '' }}
     steps:
       # JUCE is a submodule of Tracktion Engine with an SSH URL; CI can only fetch over HTTPS
       - name: Use HTTPS for GitHub submodules
@@ -34,6 +49,29 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --target Elsewhere --parallel
 
+      - name: Sign in to Azure
+        if: env.SIGN == 'true'
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign Elsewhere.exe and ptformat.dll
+        if: env.SIGN == 'true'
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_CERT_PROFILE }}
+          files-folder: ${{ github.workspace }}\build\Elsewhere_artefacts\Release
+          files-folder-filter: exe,dll
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: Elsewhere
+          description-url: https://github.com/sigsound/elsewhere
+
       - name: Installer
         shell: pwsh
         run: |
@@ -41,7 +79,38 @@ jobs:
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
           & $iscc "/DAppVersion=$env:ELSEWHERE_VERSION" scripts\windows\Elsewhere.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Compress-Archive -Path build\Elsewhere_artefacts\Release\Elsewhere.exe, build\Elsewhere_artefacts\Release\ptformat.dll, build\Elsewhere_artefacts\Release\Licenses -DestinationPath "dist\Elsewhere-$env:ELSEWHERE_VERSION-Windows-Portable.zip"
+
+      - name: Sign the installer
+        if: env.SIGN == 'true'
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_CERT_PROFILE }}
+          files-folder: ${{ github.workspace }}\dist
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: Elsewhere Setup
+          description-url: https://github.com/sigsound/elsewhere
+
+      - name: Check signatures
+        if: env.SIGN == 'true'
+        shell: pwsh
+        run: |
+          $files = @("build\Elsewhere_artefacts\Release\Elsewhere.exe", "build\Elsewhere_artefacts\Release\ptformat.dll") + (Get-ChildItem dist\*.exe).FullName
+          $bad = 0
+          foreach ($f in $files) {
+            $sig = Get-AuthenticodeSignature $f
+            "{0}: {1} ({2})" -f (Split-Path $f -Leaf), $sig.Status, $sig.SignerCertificate.Subject
+            if ($sig.Status -ne 'Valid') { $bad++ }
+          }
+          exit $bad
+
+      - name: Portable zip
+        shell: pwsh
+        run: Compress-Archive -Path build\Elsewhere_artefacts\Release\Elsewhere.exe, build\Elsewhere_artefacts\Release\ptformat.dll, build\Elsewhere_artefacts\Release\Licenses -DestinationPath "dist\Elsewhere-$env:ELSEWHERE_VERSION-Windows-Portable.zip"
 
       # Private repos share a small artifact quota across the account, so branch builds keep theirs
       # for two weeks and tag builds skip it (their files go on the draft release instead)
