@@ -236,10 +236,11 @@ juce_add_binary_data(ElsewhereKitSamples HEADER_NAME KitSamples.h NAMESPACE KitS
 juce_add_binary_data(ElsewhereSoundCatalog HEADER_NAME SoundCatalog.h NAMESPACE SoundCatalog SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/sounds/catalog.json)
 
 # The About window: the app icon and the third-party licence notices. Also the wordmark
-# (resources/Wordmark.svg), drawn in the transport bar and the About window.
+# (resources/WordmarkLight.png and WordmarkDark.png), drawn in the transport bar and the About window.
 juce_add_binary_data(ElsewhereAboutResources HEADER_NAME AboutResources.h NAMESPACE AboutResources SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/resources/AppIcon.png
-    ${CMAKE_CURRENT_SOURCE_DIR}/resources/Wordmark.svg
+    ${CMAKE_CURRENT_SOURCE_DIR}/resources/WordmarkLight.png
+    ${CMAKE_CURRENT_SOURCE_DIR}/resources/WordmarkDark.png
     ${CMAKE_CURRENT_SOURCE_DIR}/resources/ThirdPartyNotices.txt)
 set_target_properties(ElsewhereAboutResources PROPERTIES POSITION_INDEPENDENT_CODE ON)
 set_target_properties(ElsewhereSoundCatalog PROPERTIES POSITION_INDEPENDENT_CODE ON)

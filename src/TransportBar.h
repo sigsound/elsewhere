@@ -464,7 +464,7 @@ private:
     DragNumberBox tempo { 20.0, 999.0, 2 };
     juce::TextButton tapButton { "tap" };
     juce::Rectangle<int> wordmark;
-    static constexpr float wordmarkHeight = 15.0f;
+    static constexpr float wordmarkHeight = 12.5f;
     juce::Label timeSig;
     MetronomePill metronome;
     IconButton playButton { "Play", IconButton::play(), Colours::accent },
