@@ -366,17 +366,45 @@ public:
         g.fillRoundedRectangle (r, juce::jmin (r.getWidth(), r.getHeight()) * 0.5f);
     }
 
-    /** Keys small enough to be discs (m, s, a number) show their text centred, without the usual
-        side indents that would cut it short. */
-    void drawButtonText (juce::Graphics& g, juce::TextButton& b, bool isMouseOver, bool isButtonDown) override
+    /** The ink for a button's label: its text colour, unless that's too faint on the button's own
+        fill (a dark accent capsule with dark text, say), when it becomes white or near-black,
+        whichever reads better. The fill is judged over the panel it sits on. */
+    static juce::Colour buttonInk (juce::TextButton& b)
     {
-        if (b.getWidth() > b.getHeight() * 3 / 2)
-            return juce::LookAndFeel_V4::drawButtonText (g, b, isMouseOver, isButtonDown);
+        const bool on = b.getToggleState();
+        auto ink  = b.findColour (on ? juce::TextButton::textColourOnId : juce::TextButton::textColourOffId);
+        auto fill = Colours::panel.overlaidWith (b.findColour (on ? juce::TextButton::buttonOnColourId : juce::TextButton::buttonColourId));
 
-        g.setFont (getTextButtonFont (b, b.getHeight()));
-        g.setColour (b.findColour (b.getToggleState() ? juce::TextButton::textColourOnId : juce::TextButton::textColourOffId)
-                      .withMultipliedAlpha (b.isEnabled() ? 1.0f : 0.5f));
-        g.drawText (b.getButtonText(), b.getLocalBounds(), juce::Justification::centred, false);
+        if (Theme::contrast (ink, fill) < 4.5f)
+            ink = Theme::inkOn (fill);
+
+        return ink.withMultipliedAlpha (b.isEnabled() ? 1.0f : 0.5f);
+    }
+
+    /** Keys small enough to be discs (m, s, a number) show their text centred, without the usual
+        side indents that would cut it short. Wider buttons inset it as JUCE does. */
+    void drawButtonText (juce::Graphics& g, juce::TextButton& b, bool, bool) override
+    {
+        auto font = getTextButtonFont (b, b.getHeight());
+        g.setFont (font);
+        g.setColour (buttonInk (b));
+
+        if (b.getWidth() <= b.getHeight() * 3 / 2)
+        {
+            g.drawText (b.getButtonText(), b.getLocalBounds(), juce::Justification::centred, false);
+            return;
+        }
+
+        const int yIndent = juce::jmin (4, b.proportionOfHeight (0.3f));
+        const int cornerSize = juce::jmin (b.getHeight(), b.getWidth()) / 2;
+        const int fontHeight = juce::roundToInt (font.getHeight() * 0.6f);
+        const int leftIndent  = juce::jmin (fontHeight, 2 + cornerSize / (b.isConnectedOnLeft()  ? 4 : 2));
+        const int rightIndent = juce::jmin (fontHeight, 2 + cornerSize / (b.isConnectedOnRight() ? 4 : 2));
+        const int textWidth = b.getWidth() - leftIndent - rightIndent;
+
+        if (textWidth > 0)
+            g.drawFittedText (b.getButtonText(), leftIndent, yIndent, textWidth, b.getHeight() - yIndent * 2,
+                              juce::Justification::centred, 2);
     }
 
     /** Knob body and dot, as on Somewhere's Orbit design: a raised disc with an ink dot. */
