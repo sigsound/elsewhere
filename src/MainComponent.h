@@ -141,6 +141,27 @@ public:
     te::AudioTrack* addDrumTrack();
     te::Track* getLastNonReturnTrack();
 
+    /** For the README screenshots (--showcase): collaborators shown as if they were in the
+        project, and a view picked directly. */
+    void showPresence (std::vector<EditViewState::Collaborator> people, const juce::String& status)
+    {
+        std::vector<std::pair<juce::String, juce::Colour>> chips;
+        for (auto& p : people)
+            chips.push_back ({ p.name, p.colour });
+
+        viewState->collaborators = std::move (people);
+        transportBar->setCollaborators (chips);
+        transportBar->setStatusText (status);
+        viewState->sendChangeMessage();
+    }
+
+    void showView (ViewLayout::MainView v, bool withDetail)
+    {
+        if (layout.detail != withDetail)
+            togglePanel (layout.detail);
+        setMainView (v);
+    }
+
     std::function<void()> onTitleChanged;
 
     /** Ticks and names in the menu bar may have changed. */

@@ -29,6 +29,7 @@
 #include "AbletonTests.h"
 #include "CubaseTests.h"
 #include "PerfTest.h"
+#include "Showcase.h"
 
 namespace elsewhere
 {
@@ -87,7 +88,7 @@ public:
 
         // Automated test runs get their own settings (~/Library/Elsewhere Test), so they can never
         // touch your recent projects, audio setup or plug-in list
-        isTestRun = commandLine.contains ("--snapshot") || commandLine.contains ("--collab-test")
+        isTestRun = commandLine.contains ("--snapshot") || commandLine.contains ("--showcase") || commandLine.contains ("--collab-test")
                      || commandLine.contains ("--live-test") || commandLine.contains ("--device-test") || commandLine.contains ("--plugin-test")
                      || commandLine.contains ("--somewhere-test") || commandLine.contains ("--render-kits")
                      || commandLine.contains ("--dawproject-test") || commandLine.contains ("--aaf-test")
@@ -292,7 +293,9 @@ public:
         if (! toOpen.existsAsFile())
             toOpen = getRecentProject();
 
-        if (toOpen.existsAsFile())
+        if (commandLine.contains ("--showcase"))
+            loadProject (Project::createProjectFolder (showcaseDir().getChildFile ("project"), Showcase::projectName));
+        else if (toOpen.existsAsFile())
             loadProject (toOpen);
         else
             loadProject (Project::createProjectFolder (Project::getDefaultProjectsFolder(), "Untitled"));
@@ -318,6 +321,13 @@ public:
             auto args = getCommandLineParameterArray();
             auto i = args.indexOf ("--collab-test");
             runCollabTest (args[i + 1], juce::File (args[i + 2]));
+            return;
+        }
+
+        // --showcase <dir>: the README screenshots, from a demo project (src/Showcase.h)
+        if (commandLine.contains ("--showcase"))
+        {
+            juce::Timer::callAfterDelay (2500, [this] { takeShowcase (showcaseDir()); });
             return;
         }
 
@@ -932,6 +942,85 @@ private:
         // Hidden tracks leave the arrangement and mixer
         if (auto first = te::getAudioTracks (edit).getFirst())
             EditViewState::setTrackHidden (*first, true);
+    }
+
+    juce::File showcaseDir() const
+    {
+        auto cl = getCommandLineParameters();
+        return juce::File (cl.fromFirstOccurrenceOf ("--showcase ", false, false).upToFirstOccurrenceOf (" --", false, false).unquoted().trim());
+    }
+
+    /** Builds the demo song and saves each main view, dark then light, at Retina resolution:
+        the README's screenshots. Run with --no-audio. */
+    void takeShowcase (juce::File dir)
+    {
+        dir.createDirectory();
+        auto* mc = mainComponent;
+        if (mc == nullptr)
+            return quit();
+
+        auto tracks = std::make_shared<Showcase::Tracks> (Showcase::build (*mc));
+        auto& vs = mc->getViewState();
+
+        struct Step { juce::String name; std::function<void()> setUp; };
+        auto views = [mc, tracks, &vs]
+        {
+            using V = ViewLayout::MainView;
+            using D = EditViewState::DetailMode;
+            auto select = [&vs] (te::Selectable* s, te::Track* focus, D mode)
+            {
+                vs.selectionManager.deselectAll();
+                if (s != nullptr)
+                    vs.selectionManager.selectOnly (s);
+                if (focus != nullptr)
+                    vs.focusTrack (focus);
+                vs.detailMode = mode;
+                vs.sendChangeMessage();
+            };
+
+            return std::vector<Step> {
+                { "arrangement", [=] { mc->showView (V::arrangement, true); mc->showWholeArrangement(); select (tracks->keysClip, tracks->keys, D::clip); } },
+                { "devices",     [=] { mc->showView (V::arrangement, true); select (nullptr, tracks->keys, D::devices); } },
+                { "comments",    [=] { mc->showView (V::arrangement, true); select (nullptr, tracks->vocal, D::comments); } },
+                { "drums",       [=] { mc->showView (V::arrangement, true); select (tracks->chorusDrums, tracks->drums, D::clip); } },
+                { "session",     [=] { mc->showView (V::session, false); select (nullptr, tracks->keys, D::clip); } },
+                { "mixer",       [=] { mc->showView (V::mixer, false); select (nullptr, tracks->vocal, D::clip); } },
+            };
+        }();
+
+        auto save = [this, dir] (const juce::String& name)
+        {
+            auto* content = window->getContentComponent();
+            auto img = content->createComponentSnapshot (content->getLocalBounds(), true, 2.0f);
+            juce::FileOutputStream out (dir.getChildFile (name + ".png"));
+            out.setPosition (0); out.truncate();
+            juce::PNGImageFormat().writeImageToStream (img, out);
+        };
+
+        // Each step: set up, give the views a moment to lay out and draw, save. All of them in
+        // the dark theme, then all again in light.
+        auto steps = std::make_shared<std::vector<std::function<void()>>>();
+        for (auto theme : { &Themes::dark, &Themes::light })
+        {
+            const auto suffix = theme == &Themes::light ? juce::String ("_light") : juce::String();
+            steps->push_back ([this, theme] { switchTheme (*theme, true); });
+            for (auto& v : views)
+            {
+                steps->push_back (v.setUp);
+                steps->push_back ([mc] { Showcase::clearInputs (mc->getProject().getEdit()); mc->getViewState().sendChangeMessage(); });
+                steps->push_back ([save, name = v.name + suffix] { save (name); });
+            }
+        }
+
+        auto run = std::make_shared<std::function<void (size_t)>>();
+        *run = [steps, run] (size_t i)
+        {
+            if (i >= steps->size())
+                return quit();
+            (*steps)[i]();
+            juce::Timer::callAfterDelay (900, [run, i] { (*run) (i + 1); });
+        };
+        (*run) (0);
     }
 
     void takeSnapshots (juce::File dir)

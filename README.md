@@ -19,6 +19,29 @@ clip launching, rendering) and [JUCE](https://juce.com) (UI, CoreAudio, VST3/AU)
 and links with it over Wi-Fi. It's sold separately; the protocol it speaks is documented in
 `src/SomewhereLink.h`.
 
+## A look around
+
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/screenshots/arrangement-dark.webp"><img src="docs/images/screenshots/arrangement-light.webp" alt="The arrangement: a vocal, a guitar group, keys, bass and a drum track in sections, with comments on the clips and a collaborator in the project"></picture>
+
+*The arrangement, with a collaborator in the project (top right), their comments on the clips, and the piano roll below.*
+
+<table>
+<tr>
+<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/screenshots/devices-dark.webp"><img src="docs/images/screenshots/devices-light.webp" alt="Elsewhere Poly in the device chain"></picture><br><b>Devices.</b> Elsewhere's own instruments and effects, each with its full panel in the chain.</td>
+<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/screenshots/drums-dark.webp"><img src="docs/images/screenshots/drums-light.webp" alt="The drum designer for a Chorus section"></picture><br><b>Drum tracks.</b> Drag out sections, then pick a style and a feel; the pattern follows.</td>
+</tr>
+<tr>
+<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/screenshots/comments-dark.webp"><img src="docs/images/screenshots/comments-light.webp" alt="Comments on a project, read like a book"></picture><br><b>Comments.</b> Notes on a stretch of a track, in song order, from everyone on the project.</td>
+<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/screenshots/session-dark.webp"><img src="docs/images/screenshots/session-light.webp" alt="The session grid with clips in four scenes"></picture><br><b>Session view.</b> Launch clips and scenes, and record the performance into the arrangement.</td>
+</tr>
+<tr>
+<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/screenshots/mixer-dark.webp"><img src="docs/images/screenshots/mixer-light.webp" alt="The mixer"></picture><br><b>Mixer.</b> Faders, pans, sends and inserts, with groups as one strip.</td>
+<td width="50%"></td>
+</tr>
+</table>
+
+Screenshots show "Night Drive", a demo song built by `scripts/make-screenshots.py`. They follow your GitHub theme, light or dark.
+
 ## Build
 
 Requirements: Xcode (command-line tools), CMake 3.22+, Ninja.
@@ -60,6 +83,7 @@ your own bundle ID (`-DELSEWHERE_BUNDLE_ID=`) and name (see [TRADEMARKS.md](TRAD
 Dev flags:
 - `--no-audio` skips opening the audio device.
 - `--snapshot <dir>` renders the main views to PNGs and then quits.
+- `--showcase <dir>` builds a demo song and saves each main view, dark and light, for the README (`scripts/make-screenshots.py` runs it).
 - `--collab-test <A|B|C> <dir>` runs a scripted collaboration session (used by `scripts/tests/collab-sync.sh`).
 - `--device-test <dir>` checks Elsewhere's built-in devices, drum patterns and modulators; `--plugin-test <dir>` checks installed test plug-ins (Surge XT, Valhalla Supermassive, Sitala).
 
