@@ -11,15 +11,14 @@
 namespace elsewhere
 {
 //==============================================================================
-/** The Elsewhere wordmark: the letters caught mid-orbit around the mark, each smeared a little along
-    its path with a hint of colour at the edges. It's a picture, one for light themes
-    (resources/WordmarkLight.png) and one for dark (resources/WordmarkDark.png), drawn in the
-    theme's own ink. The motion trail spills a little outside the letters, mostly above them. */
+/** The Elsewhere wordmark in the brand's violet. It's a picture, one for light themes
+    (resources/WordmarkLight.png) and a lighter violet for dark ones (resources/WordmarkDark.png),
+    with a little air around the letters. */
 namespace Wordmark
 {
     /** Where the letters sit in the images (both are the same size), in image pixels. */
-    inline constexpr float imageW = 1582.0f, imageH = 224.0f;
-    inline constexpr float lettersX = 5.26f, lettersY = 50.57f, lettersW = 1572.57f, lettersH = 160.0f;
+    inline constexpr float imageW = 1588.0f, imageH = 168.0f;
+    inline constexpr float lettersX = 4.0f, lettersY = 4.0f, lettersW = 1579.89f, lettersH = 160.0f;
 
     /** Width over height of the letters. */
     inline constexpr float aspect = lettersW / lettersH;

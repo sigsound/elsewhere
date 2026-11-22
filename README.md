@@ -68,11 +68,11 @@ Pick **Elsewhere (Debug)** to track down problems (it stops on failed sanity che
 
 ### App icon
 
-The icon is Somewhere's Orbit mark caught spinning around its dot, ink on white or on black, with a hint of colour where the motion blurs it. On a Mac it comes from `resources/AppIcon.icon`, an Icon Composer file with a separate picture for light, dark and tinted (macOS 26 and later follow the system appearance; older versions show the light one). Windows and the About window use `resources/AppIcon.png`, which `scripts/make-icon.py` makes from `resources/Logo.png` (needs Pillow). Rebuild after changing either.
+The icon is four of Somewhere's Orbit marks sharing one dot, for collaboration: two opposed pairs, the second turned 75 degrees, in violet. Where the pairs cross, the colour deepens. On a Mac it comes from `resources/AppIcon.icon`, an Icon Composer file with a separate picture for light, dark and tinted (macOS 26 and later follow the system appearance; older versions show the light one). Windows and the About window use `resources/AppIcon.png`, which `scripts/make-icon.py` makes from `resources/Logo.png` (needs Pillow). Rebuild after changing either.
 
-The wordmark in the transport bar and the About window is a picture of the letters in motion: `resources/WordmarkLight.png` for light themes and `WordmarkDark.png` for dark. Both are the same size, and `src/Wordmark.h` records where the letters sit in them, so keep that in step if you replace them. Rebuild afterwards.
+The wordmark in the transport bar and the About window is a picture of the letters in the same violet: `resources/WordmarkLight.png` for light themes and `WordmarkDark.png`, a lighter violet, for dark. Both are the same size, and `src/Wordmark.h` records where the letters sit in them, so keep that in step if you replace them. Rebuild afterwards.
 
-`resources/Mark.svg` and `resources/Wordmark.svg` are the still mark and wordmark as vectors, for anywhere the motion can't be shown. `docs/images/logo-on-light.png` and `logo-on-dark.png` are the mark and wordmark side by side, for the README.
+`resources/Mark.svg` and `resources/Wordmark.svg` are the mark and wordmark as vectors. `docs/images/logo-on-light.png` and `logo-on-dark.png` are the mark and wordmark side by side, for the README.
 
 ### Signing
 
