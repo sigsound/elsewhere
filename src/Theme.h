@@ -54,6 +54,26 @@ namespace Themes
         { 0xffd9875a, 0xffcfaa55, 0xff97ae66, 0xff5fae90, 0xff6aa3d3, 0xff9d8bda,
           0xffc385c4, 0xffd58a9e, 0xffb5937d, 0xff5bafb5, 0xff9a9c96, 0xff7d8edb } };
 
+    /** Increase Contrast (or a Windows high contrast theme): the same theme with its dim ink
+        deepened by day or lifted at night (7:1 or more on every surface), and the grid colour,
+        which control outlines and tracks are drawn in, strong enough to read at 3:1. Colours map
+        by value, so entries that share a value in one theme still share one here. */
+    inline Palette withMoreContrast (const Palette& p, juce::uint32 dim, juce::uint32 grid)
+    {
+        auto q = p;
+        auto swap = [&] (juce::uint32& v) { v = v == p.textDim ? dim : v == p.gridBar ? grid : v; };
+
+        for (auto* v : { &q.background, &q.panel, &q.panelLight, &q.panelDark, &q.display, &q.outline, &q.gridLine, &q.gridBar,
+                         &q.text, &q.textDim, &q.textInverse, &q.accent, &q.playhead, &q.record, &q.solo, &q.mute, &q.modulation,
+                         &q.meterGreen, &q.meterYellow, &q.meterRed, &q.sendPost, &q.sendPre, &q.deviceAmp, &q.deviceCymbal })
+            swap (*v);
+
+        return q;
+    }
+
+    inline const Palette lightMoreContrast = withMoreContrast (light, 0xff3a3a37, 0xff74746f);
+    inline const Palette darkMoreContrast  = withMoreContrast (dark,  0xffb9b9be, 0xff6e6e75);
+
     /** The pigments' names, in palette order, for the colour menus. */
     inline const char* const colourNames[12] { "Ember", "Ochre", "Moss", "Jade", "Sky", "Iris",
                                                "Orchid", "Rose", "Clay", "Teal", "Stone", "Cobalt" };
@@ -80,6 +100,9 @@ namespace Theme
     inline const Palette* current = nullptr;
 
     inline bool isLight()   { return current != nullptr && current->isLight; }
+
+    /** True while the Increase Contrast version of the theme is showing (see Themes::withMoreContrast). */
+    inline bool moreContrast()   { return current == &Themes::lightMoreContrast || current == &Themes::darkMoreContrast; }
 
     /** Every palette colour, for remapping colours already set on components when the theme changes. */
     inline std::vector<juce::Colour*> allColours()
@@ -228,11 +251,11 @@ namespace Theme
     /** The surface controls sit on that gives the least contrast in this theme. */
     inline juce::Colour hardestSurface()                { return isLight() ? Colours::panelDark : Colours::panelLight; }
 
-    /** A colour carrying meaning as a mark or level (3:1). */
-    inline juce::Colour indicator (juce::Colour c)      { return ensureContrast (c, hardestSurface(), 3.0f); }
+    /** A colour carrying meaning as a mark or level (3:1, or 4.5:1 with Increase Contrast). */
+    inline juce::Colour indicator (juce::Colour c)      { return ensureContrast (c, hardestSurface(), moreContrast() ? 4.5f : 3.0f); }
 
-    /** A colour used for text (4.5:1). */
-    inline juce::Colour readable (juce::Colour c)       { return ensureContrast (c, hardestSurface(), 4.5f); }
+    /** A colour used for text (4.5:1, or 7:1 with Increase Contrast). */
+    inline juce::Colour readable (juce::Colour c)       { return ensureContrast (c, hardestSurface(), moreContrast() ? 7.0f : 4.5f); }
 
     /** Hash marks, control tracks and outlines: the grid colour, made visible enough to read. */
     inline juce::Colour control()                       { return indicator (Colours::gridBar); }
@@ -364,6 +387,13 @@ public:
         // Orbit: flat, no outline, fully rounded, so a square key is a disc and a wide one a capsule
         g.setColour (c);
         g.fillRoundedRectangle (r, juce::jmin (r.getWidth(), r.getHeight()) * 0.5f);
+
+        // With Increase Contrast, a key whose fill barely shows on the panel gets an outline
+        if (Theme::moreContrast() && Theme::contrast (Colours::panel.overlaidWith (c), Colours::panel) < 3.0f)
+        {
+            g.setColour (Theme::control());
+            g.drawRoundedRectangle (r.reduced (0.5f), juce::jmin (r.getWidth(), r.getHeight()) * 0.5f - 0.5f, 1.0f);
+        }
     }
 
     /** The ink for a button's label: its text colour, unless that's too faint on the button's own
@@ -403,8 +433,17 @@ public:
         const int textWidth = b.getWidth() - leftIndent - rightIndent;
 
         if (textWidth > 0)
+        {
             g.drawFittedText (b.getButtonText(), leftIndent, yIndent, textWidth, b.getHeight() - yIndent * 2,
                               juce::Justification::centred, 2);
+
+            // Something switched off (a bypassed insert) is struck through, so its fainter ink isn't the only sign
+            if (b.getProperties()["struckThrough"])
+            {
+                const auto w = juce::jmin ((float) textWidth, juce::GlyphArrangement::getStringWidth (font, b.getButtonText()));
+                g.fillRect (juce::Rectangle<float> (w, 1.0f).withCentre ({ (float) b.getWidth() * 0.5f, (float) b.getHeight() * 0.5f + 0.5f }));
+            }
+        }
     }
 
     /** Knob body and dot, as on Somewhere's Orbit design: a raised disc with an ink dot. */
@@ -424,6 +463,12 @@ public:
 
         g.setColour (knobBody());
         g.fillEllipse (juce::Rectangle<float> (size, size).withCentre (centre));
+
+        if (Theme::moreContrast())
+        {
+            g.setColour (Theme::control());
+            g.drawEllipse (juce::Rectangle<float> (size, size).withCentre (centre).reduced (0.5f), 1.0f);
+        }
 
         const auto angle = startAngle + pos * (endAngle - startAngle);
         const auto dot = juce::jlimit (3.0f, 7.0f, size * 0.13f);
@@ -506,6 +551,12 @@ public:
         auto r = juce::Rectangle<int> (width, height).toFloat();
         g.setColour (box.findColour (juce::ComboBox::backgroundColourId));
         g.fillRoundedRectangle (r, r.getHeight() * 0.5f);
+
+        if (Theme::moreContrast())
+        {
+            g.setColour (Theme::control());
+            g.drawRoundedRectangle (r.reduced (0.5f), r.getHeight() * 0.5f - 0.5f, 1.0f);
+        }
 
         // A small chevron
         const float cx = r.getRight() - r.getHeight() * 0.55f, cy = r.getCentreY();

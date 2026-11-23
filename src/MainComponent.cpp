@@ -65,6 +65,16 @@ MainComponent::MainComponent (te::Engine& e, const juce::File& editFile, AppActi
     trackList = std::make_unique<TrackList> (*viewState);
     clipList = std::make_unique<ClipList> (*viewState);
     detail = std::make_unique<DetailView> (*viewState);
+
+    // F6 moves between these; Tab moves between the controls inside one and wraps round
+    for (auto [region, title] : std::initializer_list<std::pair<juce::Component*, const char*>> {
+             { transportBar.get(), "Transport" }, { browser.get(), "Browser" }, { trackList.get(), "Track List" },
+             { arrangement.get(), "Arrangement" }, { session.get(), "Session" }, { mixer.get(), "Mixer" },
+             { clipList.get(), "Clips and Markers" }, { detail.get(), "Device Panel" } })
+    {
+        region->setTitle (title);
+        region->setFocusContainerType (juce::Component::FocusContainerType::keyboardFocusContainer);
+    }
     detail->setCommentsPanel (std::make_unique<Comments::Book> (*viewState, collab->getIdentity()));
 
     live = std::make_unique<Live::Session> (*project, *collab);
@@ -208,6 +218,7 @@ MainComponent::MainComponent (te::Engine& e, const juce::File& editFile, AppActi
     updateViewVisibility();
     routeMidiToFocusedTrack();
     setWantsKeyboardFocus (true);
+    addAndMakeVisible (focusRing);
     startTimer (1000);
 
     // Warn about Dropbox conflicts (shared projects don't need to: every change is in the op logs)
@@ -1036,6 +1047,7 @@ void MainComponent::paint (juce::Graphics& g)
 
 void MainComponent::resized()
 {
+    focusRing.setBounds (getLocalBounds());
     auto r = getLocalBounds();
     transportBar->setBounds (r.removeFromTop (52));
 
@@ -1249,6 +1261,17 @@ void MainComponent::timerCallback()
     }
 
     auto phones = somewhereLink->getConnectedNames();
+
+    for (auto& p : phones)
+        if (! lastPhones.contains (p))
+            A11y::announce ("Somewhere connected: " + p);
+
+    for (auto& p : lastPhones)
+        if (! phones.contains (p))
+            A11y::announce ("Somewhere disconnected: " + p);
+
+    lastPhones = phones;
+
     if (! phones.isEmpty())
         transportBar->setStatusText (transportBar->getStatusText() + "   Somewhere: " + phones.joinIntoString (", "));
 
@@ -1269,7 +1292,8 @@ void MainComponent::getAllCommands (juce::Array<juce::CommandID>& commands)
                          cmdShowArrangement, cmdShowSession, cmdShowScenes, cmdShowTrackIO, cmdShowTrackList,
                          cmdShowClipList, cmdShowMarkers, cmdAddMarker, cmdPrevMarker, cmdNextMarker,
                          cmdPrevTransient, cmdNextTransient,
-                         cmdEditShuffle, cmdEditSlip, cmdEditSpot, cmdEditGrid });
+                         cmdEditShuffle, cmdEditSlip, cmdEditSpot, cmdEditGrid,
+                         cmdSelectPrevTrack, cmdSelectNextTrack, cmdMuteTrack, cmdSoloTrack, cmdArmTrack, cmdNextArea, cmdPrevArea });
 
     for (int i = cmdGoToMarker1; i <= cmdGoToMarkerLast; ++i)
         commands.add (i);
@@ -1444,6 +1468,54 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
             info.addDefaultKeypress ('j', cmd);
             break;
         case cmdSetName:        info.setInfo ("Your Name...", "The name collaborators see", "Options", 0); break;
+        case cmdSelectPrevTrack:
+            info.setInfo ("Select Previous Track", "Select the track above", "Track", 0);
+            info.addDefaultKeypress (KP::upKey, 0);
+            break;
+        case cmdSelectNextTrack:
+            info.setInfo ("Select Next Track", "Select the track below", "Track", 0);
+            info.addDefaultKeypress (KP::downKey, 0);
+            break;
+        case cmdMuteTrack:
+        case cmdSoloTrack:
+        case cmdArmTrack:
+        {
+            auto* t = viewState->focusedTrack.get();
+            auto* at = dynamic_cast<te::AudioTrack*> (t);
+            const bool mixes = t != nullptr && ! t->isMasterTrack() && (at != nullptr || t->isFolderTrack());
+
+            if (id == cmdMuteTrack)
+            {
+                info.setInfo ("Mute Track", "Mute or unmute the selected track", "Track", 0);
+                info.setActive (mixes);
+                info.setTicked (mixes && t->isMuted (false));
+                info.addDefaultKeypress ('m', juce::ModifierKeys::altModifier);
+            }
+            else if (id == cmdSoloTrack)
+            {
+                info.setInfo ("Solo Track", "Solo the selected track, or stop soloing it", "Track", 0);
+                info.setActive (mixes);
+                info.setTicked (mixes && t->isSolo (false));
+                info.addDefaultKeypress ('s', juce::ModifierKeys::altModifier);
+            }
+            else
+            {
+                const bool armable = at != nullptr && ! Mixing::isReturnTrack (*at);
+                info.setInfo ("Arm Track for Recording", "Arm or disarm the selected track", "Track", 0);
+                info.setActive (armable);
+                info.setTicked (armable && EngineHelpers::isTrackArmed (*at));
+                info.addDefaultKeypress ('r', juce::ModifierKeys::altModifier);
+            }
+            break;
+        }
+        case cmdNextArea:
+            info.setInfo ("Move to Next Area", "Move keyboard focus to the controls in the next part of the window", "View", 0);
+            info.addDefaultKeypress (KP::F6Key, 0);
+            break;
+        case cmdPrevArea:
+            info.setInfo ("Move to Previous Area", "Move keyboard focus to the controls in the previous part of the window", "View", 0);
+            info.addDefaultKeypress (KP::F6Key, shift);
+            break;
         case cmdMidiLearn:
             info.setInfo ("MIDI Map Mode", "Map knobs on your MIDI controller: click a control, then move a knob", "Options", 0);
             info.setTicked (engine.getMidiLearnState().isActive());
@@ -1528,6 +1600,47 @@ bool MainComponent::perform (const InvocationInfo& info)
         case cmdShareProject:   showShareDialog(); break;
         case cmdVersionHistory: showVersionHistory(); break;
         case cmdSetName:        showNameDialog(); break;
+        case cmdSelectPrevTrack: selectTrackFromKeyboard (-1); break;
+        case cmdSelectNextTrack: selectTrackFromKeyboard (1); break;
+        case cmdNextArea:       A11y::moveToNextRegion (getFocusRegions(), true); break;
+        case cmdPrevArea:       A11y::moveToNextRegion (getFocusRegions(), false); break;
+        case cmdMuteTrack:
+        case cmdSoloTrack:
+        case cmdArmTrack:
+        {
+            auto* t = viewState->focusedTrack.get();
+
+            if (t == nullptr || t->isMasterTrack())
+                break;
+
+            const auto name = TrackSpeech::name (*t);
+
+            if (info.commandID == cmdMuteTrack)
+            {
+                t->setMute (! t->isMuted (false));
+                A11y::announce (name + (t->isMuted (false) ? " muted" : " unmuted"));
+            }
+            else if (info.commandID == cmdSoloTrack)
+            {
+                Mixing::clickSolo (*t);
+                A11y::announce (name + (t->isSolo (false) ? " soloed" : " not soloed"));
+            }
+            else if (auto* at = dynamic_cast<te::AudioTrack*> (t); at != nullptr && ! Mixing::isReturnTrack (*at))
+            {
+                if (! EngineHelpers::trackHasInput (*at))
+                {
+                    A11y::announce (name + " has no input. Choose one with its In button first", juce::AccessibilityHandler::AnnouncementPriority::high);
+                    break;
+                }
+
+                EngineHelpers::armTrack (*at, ! EngineHelpers::isTrackArmed (*at));
+                A11y::announce (name + (EngineHelpers::isTrackArmed (*at) ? " armed" : " disarmed"));
+            }
+
+            if (onMenuStateChanged)
+                onMenuStateChanged();
+            break;
+        }
         case cmdGoLive:         toggleLive(); break;
         case cmdMidiLearn:      engine.getMidiLearnState().setActive (! engine.getMidiLearnState().isActive()); break;
         case cmdNewReturnTrack:
@@ -1578,6 +1691,47 @@ bool MainComponent::perform (const InvocationInfo& info)
     });
 
     return true;
+}
+
+//==============================================================================
+std::vector<juce::Component*> MainComponent::getFocusRegions() const
+{
+    return { transportBar.get(), browser.get(), trackList.get(), arrangement.get(), session.get(), mixer.get(),
+             clipList.get(), detail.get() };
+}
+
+juce::Array<te::Track*> MainComponent::getShownTracks() const
+{
+    juce::Array<te::Track*> shown;
+
+    for (auto t : te::getAllTracks (project->getEdit()))
+        if ((t->isAudioTrack() || t->isFolderTrack()) && ! viewState->isHiddenByCollapsedGroup (*t) && ! EditViewState::isTrackHidden (*t))
+            shown.add (t);
+
+    if (auto master = project->getEdit().getMasterTrack())
+        shown.add (master);
+
+    return shown;
+}
+
+/** Up and Down: select the track above or below the focused one, and say which it is. */
+void MainComponent::selectTrackFromKeyboard (int delta)
+{
+    auto shown = getShownTracks();
+
+    if (shown.isEmpty())
+        return;
+
+    const int current = shown.indexOf (viewState->focusedTrack.get());
+    const int next = current < 0 ? (delta > 0 ? 0 : shown.size() - 1) : juce::jlimit (0, shown.size() - 1, current + delta);
+    auto* t = shown[next];
+
+    selectionManager.selectOnly (t);
+    viewState->focusTrack (t);
+    A11y::announce (TrackSpeech::describe (*t));
+
+    if (onMenuStateChanged)
+        onMenuStateChanged();
 }
 
 } // namespace elsewhere

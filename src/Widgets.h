@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Theme.h"
+#include "Accessibility.h"
 
 namespace elsewhere
 {
@@ -17,6 +18,12 @@ public:
         measurer->addClient (client);
         startTimerHz (30);
         setInterceptsMouseClicks (false, false);
+    }
+
+    // Screen readers skip meters: a value that changes 30 times a second can't be read out
+    std::unique_ptr<juce::AccessibilityHandler> createAccessibilityHandler() override
+    {
+        return createIgnoredAccessibilityHandler (*this);
     }
 
     ~LevelMeter() override
@@ -104,13 +111,16 @@ private:
 };
 
 //==============================================================================
-/** Small toggle button for track activators (M / S / ● ). */
+/** Small toggle button for track activators (M / S / ● ). The title is what screen readers
+    say ("Mute"); the on/off state is read out with it. */
 class SmallToggle : public juce::TextButton
 {
 public:
-    SmallToggle (const juce::String& text, juce::Colour on) : juce::TextButton (text)
+    SmallToggle (const juce::String& text, juce::Colour on, const juce::String& accessibleTitle = {}) : juce::TextButton (text)
     {
         setClickingTogglesState (false);
+        setToggleable (true);
+        setTitle (accessibleTitle);
         setColour (juce::TextButton::buttonOnColourId, on);
         setColour (juce::TextButton::buttonColourId, Colours::panelLight);
         setColour (juce::TextButton::textColourOnId, Colours::textInverse);
@@ -165,6 +175,12 @@ public:
         param->addListener (this);
         setPopupDisplayEnabled (true, true, nullptr);
         startTimerHz (20);   // MIDI-map / modulation-map highlighting, modulation display
+
+        // Reachable with Tab and adjustable with the arrow keys, but a click doesn't take the
+        // keyboard away from the shortcuts
+        setTitle (p.getParameterName());
+        setWantsKeyboardFocus (true);
+        setMouseClickGrabsKeyboardFocus (false);
     }
 
     ~ParameterSlider() override
@@ -275,12 +291,104 @@ public:
         juce::Slider::mouseDown (e);
     }
 
+    /** Arrow keys move it by 1% of its travel (Shift: 0.1%), so knobs with a skewed range (e.g.
+        frequency) step as evenly as they turn, and stepped ones always move to the next step. */
+    bool keyPressed (const juce::KeyPress& k) override
+    {
+        const auto mods = k.getModifiers();
+
+        if (mods.isCommandDown() || mods.isAltDown() || mods.isCtrlDown())
+            return false;
+
+        const int dir = (k.isKeyCode (juce::KeyPress::upKey) || k.isKeyCode (juce::KeyPress::rightKey)) ? 1
+                      : (k.isKeyCode (juce::KeyPress::downKey) || k.isKeyCode (juce::KeyPress::leftKey)) ? -1 : 0;
+
+        if (dir == 0)
+            return false;
+
+        nudge (dir, mods.isShiftDown());
+        return true;
+    }
+
+    /** Moves the value one step along the knob's travel, as the arrow keys and screen readers do. */
+    void nudge (int direction, bool fine = false)
+    {
+        const auto before = getValue();
+        const auto start = valueToProportionOfLength (before);
+        const auto step = fine ? 0.001 : 0.01;
+
+        for (int i = 1; i <= 1000; ++i)
+        {
+            const auto p = juce::jlimit (0.0, 1.0, start + direction * step * i);
+            const auto v = getNormalisableRange().snapToLegalValue (proportionOfLengthToValue (p));
+
+            if (! juce::approximatelyEqual (v, before))
+            {
+                ScopedDragNotification gesture (*this);
+                setValue (v, juce::sendNotificationSync);
+                return;
+            }
+
+            if (p <= 0.0 || p >= 1.0)
+                return;
+        }
+    }
+
+    std::unique_ptr<juce::AccessibilityHandler> createAccessibilityHandler() override
+    {
+        return std::make_unique<AccessibilityHandler> (*this);
+    }
+
     void valueChanged() override                          { param->setParameter ((float) getValue(), juce::sendNotification); }
     void startedDragging() override                       { param->parameterChangeGestureBegin(); }
     void stoppedDragging() override                       { param->parameterChangeGestureEnd(); }
 
 private:
     te::AutomatableParameter::Ptr param;
+
+    /** Screen readers see the value along the knob's travel (0 to 1) and hear the parameter's own
+        text ("-6.0 dB", "1.2 kHz"). Their increment and decrement step as the arrow keys do. */
+    struct AccessibilityHandler : public juce::AccessibilityHandler
+    {
+        explicit AccessibilityHandler (ParameterSlider& s)
+            : juce::AccessibilityHandler (s, juce::AccessibilityRole::slider, {},
+                                          Interfaces { std::unique_ptr<juce::AccessibilityValueInterface> (new Value (s)) }),
+              slider (s) {}
+
+        juce::String getHelp() const override     { return slider.getTooltip(); }
+
+        struct Value : public juce::AccessibilityValueInterface
+        {
+            explicit Value (ParameterSlider& s) : slider (s) {}
+
+            bool isReadOnly() const override                { return ! slider.isEnabled(); }
+            double getCurrentValue() const override         { return slider.valueToProportionOfLength (slider.getValue()); }
+            juce::String getCurrentValueAsString() const override  { return slider.getTextFromValue (slider.getValue()); }
+            AccessibleValueRange getRange() const override  { return { { 0.0, 1.0 }, 0.01 }; }
+
+            void setValue (double proportion) override
+            {
+                const auto delta = proportion - getCurrentValue();
+
+                // An increment or decrement (one step either way): step as the arrow keys do
+                if (std::abs (std::abs (delta) - 0.01) < 1.0e-6)
+                    return slider.nudge (delta > 0.0 ? 1 : -1);
+
+                ScopedDragNotification gesture (slider);
+                slider.setValue (slider.proportionOfLengthToValue (juce::jlimit (0.0, 1.0, proportion)), juce::sendNotificationSync);
+            }
+
+            void setValueAsString (const juce::String& text) override
+            {
+                ScopedDragNotification gesture (slider);
+                slider.setValue (slider.getValueFromText (text), juce::sendNotificationSync);
+            }
+
+            ParameterSlider& slider;
+        };
+
+        ParameterSlider& slider;
+    };
 
     bool lastLearnState = false, lastMapped = false, lastModMapping = false, lastModulated = false;
     float lastShownValue = 0.0f;
@@ -332,6 +440,61 @@ public:
         setColour (juce::Label::outlineColourId, Colours::outline);
         setMouseCursor (juce::MouseCursor::UpDownResizeCursor);
         onTextChange = [this] { setValue (getText().getDoubleValue(), true); };
+        setMouseClickGrabsKeyboardFocus (false);
+    }
+
+    /** What screen readers call it, e.g. "Tempo", and the unit they read after the value ("BPM"). */
+    juce::String accessibleName, unit;
+
+    /** Up and Down change it by one (Shift: by a hundredth); Return types a value. */
+    bool keyPressed (const juce::KeyPress& k) override
+    {
+        if (k.getModifiers().isCommandDown() || k.getModifiers().isAltDown())
+            return false;
+
+        const double step = k.getModifiers().isShiftDown() ? std::pow (10.0, -numDecimals) : 1.0;
+
+        if (k.isKeyCode (juce::KeyPress::upKey))    { setValue (value + step, true); announceValue(); return true; }
+        if (k.isKeyCode (juce::KeyPress::downKey))  { setValue (value - step, true); announceValue(); return true; }
+        if (k.isKeyCode (juce::KeyPress::returnKey)) { showEditor(); return true; }
+
+        return juce::Label::keyPressed (k);
+    }
+
+    std::unique_ptr<juce::AccessibilityHandler> createAccessibilityHandler() override
+    {
+        struct Handler : public juce::AccessibilityHandler
+        {
+            explicit Handler (DragNumberBox& b)
+                : juce::AccessibilityHandler (b, juce::AccessibilityRole::slider,
+                                              juce::AccessibilityActions().addAction (juce::AccessibilityActionType::press, [&b] { b.showEditor(); }),
+                                              Interfaces { std::unique_ptr<juce::AccessibilityValueInterface> (new Value (b)) }),
+                  box (b) {}
+
+            juce::String getTitle() const override    { return box.accessibleName; }
+            juce::String getHelp() const override     { return box.getTooltip(); }
+
+            juce::AccessibleState getCurrentState() const override
+            {
+                return box.isBeingEdited() ? juce::AccessibleState() : juce::AccessibilityHandler::getCurrentState();
+            }
+
+            struct Value : public juce::AccessibilityValueInterface
+            {
+                explicit Value (DragNumberBox& b) : box (b) {}
+                bool isReadOnly() const override                { return false; }
+                double getCurrentValue() const override         { return box.value; }
+                void setValue (double v) override               { box.setValue (v, true); }
+                AccessibleValueRange getRange() const override  { return { { box.minValue, box.maxValue }, 1.0 }; }
+                juce::String getCurrentValueAsString() const override   { return (juce::String (box.value, box.numDecimals) + " " + box.unit).trim(); }
+                void setValueAsString (const juce::String& t) override  { setValue (t.getDoubleValue()); }
+                DragNumberBox& box;
+            };
+
+            DragNumberBox& box;
+        };
+
+        return std::make_unique<Handler> (*this);
     }
 
     std::function<void (double)> onValueChange;
@@ -359,6 +522,12 @@ public:
 private:
     double minValue, maxValue, value = 0.0, dragStartValue = 0.0;
     int numDecimals;
+
+    void announceValue()
+    {
+        if (auto* h = getAccessibilityHandler())
+            h->notifyAccessibilityEvent (juce::AccessibilityEvent::valueChanged);
+    }
 };
 
 } // namespace elsewhere

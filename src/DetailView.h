@@ -20,25 +20,39 @@ namespace elsewhere
 class DevicePanel : public juce::Component, private juce::ValueTree::Listener
 {
 public:
+    std::unique_ptr<juce::AccessibilityHandler> createAccessibilityHandler() override
+    {
+        return std::make_unique<A11y::Handler> (*this, juce::AccessibilityRole::group,
+            A11y::Handler::Info { [this] { return plugin != nullptr ? plugin->getName() : juce::String(); },
+                                  [this] { return plugin != nullptr && ! plugin->isEnabled() ? juce::String ("off") : juce::String(); }, {}, {} });
+    }
+
     DevicePanel (te::Plugin& p) : plugin (&p)
     {
         power.setClickingTogglesState (true);
         power.setToggleState (p.isEnabled(), juce::dontSendNotification);
         power.setColour (juce::TextButton::buttonOnColourId, Colours::accent);
         power.onClick = [this] { plugin->setEnabled (power.getToggleState()); repaint(); };
+        power.setTitle ("Device On");
         addAndMakeVisible (power);
 
+        // Screen readers see a group named after the device (its name is painted), holding its controls
+        setFocusContainerType (juce::Component::FocusContainerType::focusContainer);
+
         editButton.onClick = [this] { plugin->showWindowExplicitly(); };
+        editButton.setTitle ("Open Plug-in Window");
         editButton.setTooltip ("Open plugin window");
         addAndMakeVisible (editButton);
 
         menuButton.onClick = [this] { showMenu(); };
+        menuButton.setTitle ("Device Menu");
         addAndMakeVisible (menuButton);
 
         // A key input: which track this device listens to
         if (Routing::canSidechain (p))
         {
             keyButton.onClick = [this] { showKeyMenu(); };
+            keyButton.setTitle ("Sidechain");
             keyButton.setTooltip ("Sidechain: let another track's sound drive this device");
             addAndMakeVisible (keyButton);
             plugin->state.addListener (this);

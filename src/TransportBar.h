@@ -29,6 +29,12 @@ public:
         g.setColour (on ? onColour : (down ? Theme::lift (Colours::panelLight, 0.15f) : over ? Theme::lift (Colours::panelLight, 0.07f) : Colours::panelLight));
         g.fillEllipse (r);
 
+        if (Theme::moreContrast() && ! on)
+        {
+            g.setColour (Theme::control());
+            g.drawEllipse (r.reduced (0.5f), 1.0f);
+        }
+
         auto iconArea = r.reduced (d * 0.33f);
         g.setColour (on ? (onColour == Colours::record ? juce::Colours::white : Colours::textInverse) : offGlyph.value_or (Colours::text));
         g.fillPath (path, path.getTransformToScaleToFit (iconArea, true));
@@ -63,6 +69,29 @@ class MetronomePill : public juce::Component, public juce::TooltipClient
 public:
     std::function<void()> onToggleClick, onShowCountIn;
 
+    MetronomePill()
+    {
+        // Each half is a key of its own for screen readers and the keyboard. They draw nothing
+        // and take no clicks: the pill paints both and handles the mouse.
+        clickKey.setTitle ("Metronome");
+        clickKey.setToggleable (true);
+        clickKey.onClick = [this] { if (onToggleClick) onToggleClick(); };
+        countInKey.setTitle ("Count-in");
+        countInKey.onClick = [this] { if (onShowCountIn) onShowCountIn(); };
+
+        for (auto* k : { &clickKey, &countInKey })
+        {
+            k->setInterceptsMouseClicks (false, false);
+            addAndMakeVisible (*k);
+        }
+    }
+
+    void resized() override
+    {
+        clickKey.setBounds (getLocalBounds().withRight (divider()));
+        countInKey.setBounds (getChevronArea());
+    }
+
     void setState (bool clickIsOn, bool countInIsOn, const juce::String& countInName)
     {
         if (clickIsOn == clickOn && countInIsOn == countOn && countInName == countName)
@@ -71,6 +100,9 @@ public:
         clickOn = clickIsOn;
         countOn = countInIsOn;
         countName = countInName;
+        clickKey.setToggleState (clickOn, juce::dontSendNotification);
+        countInKey.setDescription (countOn ? countName : "Off");
+        countInKey.setTooltip (countOn ? "Count-in: " + countName : "Count-in before recording");
         repaint();
     }
 
@@ -154,6 +186,14 @@ public:
     }
 
 private:
+    struct Key : public juce::Button
+    {
+        Key() : juce::Button ({}) {}
+        void paintButton (juce::Graphics&, bool, bool) override {}
+    };
+
+    Key clickKey, countInKey;
+
     enum class Part { none, click, countIn };
     Part hover = Part::none, pressed = Part::none;
     bool clickOn = false, countOn = false;
@@ -193,7 +233,12 @@ public:
         addAndMakeVisible (tempo);
 
         tapButton.onClick = [this] { tap(); };
+        tapButton.setTitle ("Tap Tempo");
+        tapButton.setTooltip ("Tap tempo: click in time to set the tempo");
         addAndMakeVisible (tapButton);
+        tempo.accessibleName = "Tempo";
+        tempo.unit = "BPM";
+        tempo.setTooltip ("Tempo. Drag up or down, or use the arrow keys; double-click or Return to type it");
 
         // Orbit: the tempo in big light digits, the time signature quietly beside it
         tempo.setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
@@ -207,6 +252,7 @@ public:
         timeSig.setColour (juce::Label::outlineColourId, juce::Colours::transparentBlack);
         timeSig.setColour (juce::Label::textColourId, Colours::textDim);
         timeSig.setFont (juce::FontOptions (11.0f));
+        timeSig.setTooltip ("Time signature. Double-click to change it");
         timeSig.onTextChange = [this]
         {
             auto s = timeSig.getText();
@@ -231,11 +277,18 @@ public:
         recordButton.onClick = [this] { EngineHelpers::toggleRecord (edit); };
         loopButton.onClick = [this] { EngineHelpers::setLooping (edit, ! transport.looping.get()); refresh(); };
         loopButton.setTooltip ("Loop (Cmd+L)");
+        playButton.setTooltip ("Play (Space)");
+        stopButton.setTooltip ("Stop; press again to go back to the start");
+        recordButton.setTooltip ("Record (F9)");
+
+        for (auto* b : { &playButton, &recordButton, &loopButton })
+            b->setToggleable (true);
 
         for (auto* b : { &playButton, &stopButton, &recordButton, &loopButton })
             addAndMakeVisible (*b);
 
         automationArm.setTooltip ("Automation Arm: record knob and fader moves while playing");
+        automationArm.setTitle ("Automation Arm");
         automationArm.setColour (juce::TextButton::buttonOnColourId, Colours::record);
         automationArm.onClick = [this]
         {
@@ -246,6 +299,7 @@ public:
         addAndMakeVisible (automationArm);
 
         midiLearn.setTooltip ("MIDI Map Mode (Cmd+M): click a knob or fader, then move a control on your MIDI controller");
+        midiLearn.setTitle ("MIDI Map Mode");
         midiLearn.setColour (juce::TextButton::buttonOnColourId, Colours::solo);
         midiLearn.onClick = [this]
         {
@@ -256,6 +310,7 @@ public:
         addAndMakeVisible (midiLearn);
 
         punchButton.setTooltip ("Punch: record only between the brace's ends on the ruler. Right-click for pre-roll");
+        punchButton.setTitle ("Punch Recording");
         punchButton.setColour (juce::TextButton::buttonOnColourId, Colours::record);
         punchButton.onClick = [this]
         {
@@ -269,10 +324,12 @@ public:
 
 
         liveButton.setTooltip ("Play together live over the internet (Cmd+J)");
+        liveButton.setTitle ("Live Session");
         liveButton.setColour (juce::TextButton::buttonOnColourId, Colours::record);
         liveButton.onClick = [this] { if (onLiveClicked) onLiveClicked(); };
         addAndMakeVisible (liveButton);
 
+        backToArrangement.setTitle ("Back to Arrangement");
         backToArrangement.setTooltip ("Some tracks are playing Session clips. Click to play the Arrangement on all tracks again.");
         backToArrangement.setColour (juce::TextButton::buttonColourId, Colours::accent);
         backToArrangement.setColour (juce::TextButton::textColourOffId, Colours::textInverse);
@@ -288,9 +345,11 @@ public:
         position.setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
         position.setColour (juce::Label::outlineColourId, juce::Colours::transparentBlack);
         addAndMakeVisible (position);
+        position.setTooltip ("Playhead position: bars, beats and time");
 
         quantBox.addItemList ({ "None", "1/16", "1/8", "1/4", "1/2", "1 Bar", "2 Bars", "4 Bars" }, 1);
         quantBox.setTooltip ("Launch quantisation for Session clips");
+        quantBox.setTitle ("Launch Quantisation");
         quantBox.onChange = [this] { applyLaunchQuantisation(); };
         quantBox.setSelectedId (6, juce::dontSendNotification);
         applyLaunchQuantisation();
@@ -298,6 +357,7 @@ public:
 
         gridBox.addItemList ({ "Adaptive", "1/16", "1/8", "1/4", "1/2", "1 Bar", "Off" }, 1);
         gridBox.setTooltip ("Arrangement snap grid");
+        gridBox.setTitle ("Snap Grid");
         gridBox.setSelectedId (4, juce::dontSendNotification);
         gridBox.onChange = [this] { applyGrid(); };
         addAndMakeVisible (gridBox);
@@ -308,6 +368,7 @@ public:
         editModeBox.setTooltip ("Edit mode: Shuffle (F1) closes clips up, Slip (F2) moves freely, "
                                 "Spot (F3) asks for an exact time, Grid (F4) snaps");
         editModeBox.setSelectedId ((int) viewState.editMode + 1, juce::dontSendNotification);
+        editModeBox.setTitle ("Edit Mode");
         editModeBox.onChange = [this]
         {
             if (onEditMode)
@@ -317,6 +378,7 @@ public:
 
         viewToggle.onClick = [this] { if (onToggleView) onToggleView(); };
         viewToggle.setTooltip ("Show the mixer (Cmd+=)");
+        viewToggle.setTitle ("Mixer");
         viewToggle.setColour (juce::TextButton::buttonOnColourId, Colours::accent);
         viewToggle.setColour (juce::TextButton::textColourOnId, Colours::background);
         addAndMakeVisible (viewToggle);
@@ -331,6 +393,16 @@ public:
         status.setColour (juce::Label::textColourId, Colours::textDim);
         status.setFont (juce::FontOptions (11.0f));
         addAndMakeVisible (status);
+
+        // Who's in the project, for screen readers (the chips are painted)
+        collaboratorInfo.setInterceptsMouseClicks (false, false);
+        addChildComponent (collaboratorInfo);
+
+        for (auto* b : { &automationArm, &midiLearn, &liveButton, &punchButton, &viewToggle })
+            b->setToggleable (true);
+
+        setTitle ("Transport");
+        setFocusContainerType (juce::Component::FocusContainerType::keyboardFocusContainer);
 
         transport.addChangeListener (this);
         refresh();
@@ -366,6 +438,13 @@ public:
         {
             collaborators = std::move (people);
             status.setVisible (collaborators.empty());
+
+            juce::StringArray names;
+            for (auto& p : collaborators)
+                names.add (p.first);
+
+            collaboratorInfo.text = "In the project now: " + names.joinIntoString (", ");
+            collaboratorInfo.setVisible (! collaborators.empty());
             repaint();
         }
     }
@@ -426,6 +505,7 @@ public:
         const int centreW = quantBox.isVisible() ? 800 : 710;
         auto side = r.removeFromRight (juce::jlimit (0, 180, r.getWidth() - centreW));
         status.setBounds (side.getWidth() >= 70 ? side : juce::Rectangle<int>());
+        collaboratorInfo.setBounds (side);
         backToArrangement.setBounds (side.withSizeKeepingCentre (juce::jmin (side.getWidth(), 160), h));
 
         auto centre = r.withSizeKeepingCentre (juce::jmin (r.getWidth(), centreW), h);
@@ -478,6 +558,21 @@ private:
     juce::TextButton backToArrangement { juce::String::fromUTF8 ("\xe2\x86\xa9 Back to Arrangement") };
     juce::Array<double> tapTimes;
     std::vector<std::pair<juce::String, juce::Colour>> collaborators;
+
+    /** Paints nothing: it tells screen readers what the collaborator chips show. */
+    struct InfoText : public juce::Component
+    {
+        juce::String text;
+
+        std::unique_ptr<juce::AccessibilityHandler> createAccessibilityHandler() override
+        {
+            return std::make_unique<A11y::Handler> (*this, juce::AccessibilityRole::staticText,
+                                                    A11y::Handler::Info { [this] { return text; }, {}, {}, {} });
+        }
+    } collaboratorInfo;
+
+    // What the transport was doing last time, so a change can be announced
+    bool wasPlaying = false, wasRecording = false;
 
     void tap()
     {
@@ -568,6 +663,17 @@ private:
 
     void refresh()
     {
+        // Screen readers hear the transport start and stop, however it happened (a key, a
+        // collaborator, a controller)
+        if (transport.isRecording() != wasRecording || transport.isPlaying() != wasPlaying)
+        {
+            A11y::announce (transport.isRecording() ? (wasRecording ? "" : "Recording")
+                                                    : transport.isPlaying() ? (wasRecording ? "Recording stopped, playing" : "Playing")
+                                                                            : (wasRecording ? "Recording stopped" : "Stopped"));
+            wasPlaying = transport.isPlaying();
+            wasRecording = transport.isRecording();
+        }
+
         playButton.setToggleState (transport.isPlaying(), juce::dontSendNotification);
         recordButton.setToggleState (transport.isRecording(), juce::dontSendNotification);
         loopButton.setToggleState (transport.looping.get(), juce::dontSendNotification);

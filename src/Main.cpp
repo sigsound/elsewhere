@@ -68,7 +68,8 @@ public:
                 || args.contains ("--somewhere-test") || args.contains ("--render-kits")
                 || args.contains ("--dawproject-test") || args.contains ("--aaf-test") || args.contains ("--import-test")
                 || args.contains ("--ableton-test") || args.contains ("--cubase-test") || args.contains ("--perf-test")
-                || args.contains ("--project-audio-test") || args.contains ("--takes-test") || args.contains ("--midi-lanes-test") || args.contains ("--routing-test") || args.contains ("--surfaces-test") || args.contains ("--export-test");
+                || args.contains ("--project-audio-test") || args.contains ("--takes-test") || args.contains ("--midi-lanes-test") || args.contains ("--routing-test") || args.contains ("--surfaces-test") || args.contains ("--export-test")
+                || args.contains ("--accessibility-test");
     }
 
     void initialise (const juce::String& commandLine) override
@@ -94,7 +95,8 @@ public:
                      || commandLine.contains ("--dawproject-test") || commandLine.contains ("--aaf-test")
                      || commandLine.contains ("--import-test") || commandLine.contains ("--ableton-test")
                      || commandLine.contains ("--cubase-test") || commandLine.contains ("--project-audio-test")
-                     || commandLine.contains ("--takes-test") || commandLine.contains ("--midi-lanes-test") || commandLine.contains ("--routing-test") || commandLine.contains ("--surfaces-test") || commandLine.contains ("--export-test");   // a normal window for Somewhere tests: use with --open <copy>
+                     || commandLine.contains ("--takes-test") || commandLine.contains ("--midi-lanes-test") || commandLine.contains ("--routing-test") || commandLine.contains ("--surfaces-test") || commandLine.contains ("--export-test")
+                     || commandLine.contains ("--accessibility-test");   // a normal window for Somewhere tests: use with --open <copy>
 
         // Dev aid: --perf-test <project.elsewhere> <outDir> [buffer] [seconds] times audio callbacks
         // on its own engine (no audio device) and quits
@@ -137,8 +139,11 @@ public:
         // Test runs keep the dark theme so their snapshots stay comparable
         if (! isTestRun)
         {
+            A11y::refresh();
             applyAppearance (false);
             juce::Desktop::getInstance().addDarkModeSettingListener (this);
+            systemSettingsWatcher.onChange = [this] { systemAccessibilityChanged(); };
+            systemSettingsWatcher.startTimer (1000);
         }
 
         // Dev aid: --plugin-test <outDir> checks the installed test plug-ins and quits
@@ -279,6 +284,11 @@ public:
         window->addKeyListener (&escapeCancelsMapping);
         window->addKeyListener (commandManager.getKeyMappings());
 
+        // Asked before the shortcuts: Tab moves between controls while navigating by keyboard
+        keyboardNavigation.getHome = [this] () -> juce::Component* { return mainComponent; };
+        keyboardNavigation.isEscapeTaken = [] { return ModulationMap::isActive(); };
+        window->addKeyListener (&keyboardNavigation);
+
        #if JUCE_MAC
         juce::PopupMenu appMenu;
         appMenu.addItem (6200, "About Elsewhere");
@@ -335,6 +345,16 @@ public:
             return;
         }
 
+        // Dev aid: --accessibility-test <file> writes what screen readers are given (the window's
+        // accessibility tree) and checks the keyboard navigation, then quits
+        if (commandLine.contains ("--accessibility-test"))
+        {
+            auto file = juce::File (commandLine.fromFirstOccurrenceOf ("--accessibility-test ", false, false).upToFirstOccurrenceOf (" --", false, false).unquoted().trim());
+            // (Started outside the timer: the test runs message loops of its own, which would fire it again)
+            juce::Timer::callAfterDelay (2500, [this, file] { juce::MessageManager::callAsync ([this, file] { runAccessibilityTest (file); }); });
+            return;
+        }
+
         // Dev aid: --snapshot <dir> renders both main views to PNGs and quits
         if (commandLine.contains ("--snapshot"))
         {
@@ -362,6 +382,7 @@ public:
         if (window != nullptr)
             window->setMenuBar (nullptr);
        #endif
+        systemSettingsWatcher.stopTimer();
         juce::Desktop::getInstance().removeDarkModeSettingListener (this);
 
         if (window != nullptr)
@@ -773,11 +794,49 @@ private:
             applyAppearance (true);
     }
 
+    /** Increase Contrast: on when the system asks for it (Increase Contrast on macOS, a high
+        contrast theme on Windows) or when it's switched on in Options > Appearance. */
+    bool wantsMoreContrast()
+    {
+        return A11y::settings().moreContrast || engine->getPropertyStorage().getPropertiesFile().getBoolValue ("moreContrast", false);
+    }
+
+    static juce::String systemSettingsName()
+    {
+       #if JUCE_MAC
+        return "System Settings";
+       #else
+        return "Windows Settings";
+       #endif
+    }
+
+    /** Checks the system's accessibility settings once a second and follows any change. */
+    struct SystemSettingsWatcher : public juce::Timer
+    {
+        std::function<void()> onChange;
+        void timerCallback() override   { if (A11y::refresh() && onChange) onChange(); }
+    } systemSettingsWatcher;
+
+    void systemAccessibilityChanged()
+    {
+        applyAppearance (true);
+
+        // Reduce Motion: views that flash read the setting as they paint
+        auto& desktop = juce::Desktop::getInstance();
+        for (int i = 0; i < desktop.getNumComponents(); ++i)
+            if (auto* c = desktop.getComponent (i))
+                c->repaint();
+
+        menuItemsChanged();
+    }
+
     void applyAppearance (bool updateOpenWindows)
     {
         auto appearance = getAppearance();
         auto dark = appearance == "dark" || (appearance == "auto" && juce::Desktop::getInstance().isDarkModeActive());
-        auto& palette = dark ? Themes::dark : Themes::light;
+        auto more = wantsMoreContrast();
+        auto& palette = dark ? (more ? Themes::darkMoreContrast : Themes::dark)
+                             : (more ? Themes::lightMoreContrast : Themes::light);
 
         setAppAppearance (appearance == "light" ? 1 : appearance == "dark" ? 2 : 0);
         switchTheme (palette, updateOpenWindows);
@@ -850,6 +909,8 @@ private:
             return true;
         }
     } escapeCancelsMapping;
+
+    A11y::KeyboardNavigation keyboardNavigation;
 
     std::unique_ptr<MainWindow> window;
     MainComponent* mainComponent = nullptr;   // owned by the window
@@ -1081,6 +1142,199 @@ private:
             }
         }
 
+        quit();
+    }
+
+    void runAccessibilityTest (juce::File file)
+    {
+        juce::String out;
+
+        auto roleName = [] (juce::AccessibilityRole r) -> juce::String
+        {
+            using R = juce::AccessibilityRole;
+            static const std::pair<R, const char*> names[] {
+                { R::button, "button" }, { R::toggleButton, "toggle" }, { R::radioButton, "radio" }, { R::comboBox, "combo" },
+                { R::image, "image" }, { R::slider, "slider" }, { R::label, "label" }, { R::staticText, "text" },
+                { R::editableText, "editable" }, { R::group, "group" }, { R::window, "window" }, { R::dialogWindow, "dialog" },
+                { R::scrollBar, "scrollbar" }, { R::list, "list" }, { R::listItem, "listItem" }, { R::tree, "tree" },
+                { R::treeItem, "treeItem" }, { R::ignored, "ignored" }, { R::unspecified, "unspecified" } };
+
+            for (auto& [role, name] : names)
+                if (role == r)
+                    return name;
+
+            return "other";
+        };
+
+        std::function<void (juce::AccessibilityHandler&, int)> walk = [&] (juce::AccessibilityHandler& h, int depth)
+        {
+            juce::String line = juce::String::repeatedString ("  ", depth) + roleName (h.getRole());
+            if (h.getTitle().isNotEmpty())          line << " \"" << h.getTitle() << "\"";
+            if (h.getDescription().isNotEmpty())    line << " (" << h.getDescription() << ")";
+            if (auto* v = h.getValueInterface())    line << " = " << v->getCurrentValueAsString();
+            auto st = h.getCurrentState();
+            if (st.isCheckable())                   line << (st.isChecked() ? " [on]" : " [off]");
+            if (st.isSelected())                    line << " [selected]";
+            if (h.getActions().contains (juce::AccessibilityActionType::press)) line << " [press]";
+            out << line << "\n";
+
+            for (auto* child : h.getChildren())
+                walk (*child, depth + 1);
+        };
+
+        auto describeFocus = [] () -> juce::String
+        {
+            auto* f = juce::Component::getCurrentlyFocusedComponent();
+            if (f == nullptr)
+                return "nothing";
+
+            juce::String region;
+            for (auto* p = f->getParentComponent(); p != nullptr; p = p->getParentComponent())
+                if (p->isKeyboardFocusContainer())
+                {
+                    region = p->getTitle();
+                    break;
+                }
+
+            auto* h = f->getAccessibilityHandler();
+            return (h != nullptr ? h->getTitle() : f->getName()) + " in " + (region.isEmpty() ? juce::String ("the window") : region);
+        };
+
+        auto* peer = window->getPeer();
+        auto press = [&] (const juce::KeyPress& k, const juce::String& name)
+        {
+            const bool used = peer->handleKeyPress (k);
+            out << "  " << name << (used ? "" : " (not used)") << ": focus on " << describeFocus();
+            if (auto* t = mainComponent->getViewState().focusedTrack.get())
+                out << "; track " << TrackSpeech::describe (*t);
+            out << "\n";
+        };
+
+        // A dialog left open (e.g. about missing audio) would block the window
+        while (auto* modal = juce::Component::getCurrentlyModalComponent())
+        {
+            out << "Closed a dialog: " << modal->getName() << " " << modal->getTitle() << "\n";
+            modal->exitModalState (0);
+            delete modal;
+        }
+
+        juce::Process::makeForegroundProcess();
+        window->toFront (true);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (500);
+
+        out << "== Accessibility tree\n";
+        if (auto* h = window->getAccessibilityHandler())
+            walk (*h, 0);
+
+        for (auto [command, name] : { std::pair { (int) cmdShowArrangement, "Arrangement" }, { (int) cmdToggleMixer, "Mixer" } })
+        {
+            commandManager.invokeDirectly (command, false);
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (500);
+            out << "\n== Accessibility tree, " << name << "\n";
+            walk (*window->getAccessibilityHandler(), 0);
+        }
+
+        commandManager.invokeDirectly (cmdShowArrangement, false);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (300);
+
+        // The Live tab, pressed as a screen reader would
+        std::function<juce::AccessibilityHandler* (juce::AccessibilityHandler&, const juce::String&)> find
+            = [&] (juce::AccessibilityHandler& h, const juce::String& title) -> juce::AccessibilityHandler*
+        {
+            if (h.getTitle() == title && h.getRole() == juce::AccessibilityRole::button)
+                return &h;
+            for (auto* c : h.getChildren())
+                if (auto* found = find (*c, title))
+                    return found;
+            return nullptr;
+        };
+
+        if (auto* liveTab = find (*window->getAccessibilityHandler(), "Live"))
+        {
+            liveTab->getActions().invoke (juce::AccessibilityActionType::press);
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (500);
+
+            if (auto* panel = find (*window->getAccessibilityHandler(), "Go Live"))
+            {
+                out << "\n== Live panel\n";
+                for (auto* c : panel->getParent()->getChildren())
+                    walk (*c, 1);
+            }
+        }
+
+        out << "\n== Keyboard\n";
+        mainComponent->grabKeyboardFocus();
+        out << "  start: focus on " << describeFocus() << "\n";
+        press (juce::KeyPress (juce::KeyPress::F6Key), "F6");
+        for (int i = 0; i < 4; ++i)
+            press (juce::KeyPress (juce::KeyPress::tabKey), "Tab");
+        press (juce::KeyPress (juce::KeyPress::tabKey, juce::ModifierKeys::shiftModifier, 0), "Shift-Tab");
+        press (juce::KeyPress (juce::KeyPress::F6Key), "F6");
+        press (juce::KeyPress (juce::KeyPress::F6Key), "F6");
+        press (juce::KeyPress (juce::KeyPress::F6Key, juce::ModifierKeys::shiftModifier, 0), "Shift-F6");
+        press (juce::KeyPress (juce::KeyPress::escapeKey), "Escape");
+        press (juce::KeyPress (juce::KeyPress::downKey), "Down");
+        press (juce::KeyPress (juce::KeyPress::downKey), "Down");
+        press (juce::KeyPress (juce::KeyPress::upKey), "Up");
+        press (juce::KeyPress ('m', juce::ModifierKeys::altModifier, 0), "Alt-M");
+        press (juce::KeyPress ('s', juce::ModifierKeys::altModifier, 0), "Alt-S");
+        press (juce::KeyPress ('m', juce::ModifierKeys::altModifier, 0), "Alt-M");
+        press (juce::KeyPress ('s', juce::ModifierKeys::altModifier, 0), "Alt-S");
+
+        // A fader, through the value interface a screen reader uses
+        out << "\n== Volume fader\n";
+        std::function<juce::AccessibilityHandler* (juce::AccessibilityHandler&)> findVolume = [&] (juce::AccessibilityHandler& h) -> juce::AccessibilityHandler*
+        {
+            if (h.getRole() == juce::AccessibilityRole::slider && h.getTitle() == "Volume")
+                return &h;
+            for (auto* c : h.getChildren())
+                if (auto* found = findVolume (*c))
+                    return found;
+            return nullptr;
+        };
+
+        if (auto* vol = findVolume (*window->getAccessibilityHandler()))
+        {
+            auto* v = vol->getValueInterface();
+            const auto before = v->getCurrentValue();
+            out << "  " << v->getCurrentValueAsString() << " at " << before << "\n";
+            v->setValue (before + v->getRange().getInterval());
+            out << "  increment: " << v->getCurrentValueAsString() << "\n";
+            v->setValue (v->getCurrentValue() - v->getRange().getInterval());
+            out << "  decrement: " << v->getCurrentValueAsString() << "\n";
+        }
+        else
+        {
+            out << "  no Volume slider found\n";
+        }
+
+        // What the focus ring and Increase Contrast look like
+        auto snapshot = [this, dir = file.getParentDirectory()] (const juce::String& name)
+        {
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (400);
+            auto* content = window->getContentComponent();
+            auto img = content->createComponentSnapshot (content->getLocalBounds(), true, 1.0f);
+            juce::FileOutputStream stream (dir.getChildFile (name + ".png"));
+            stream.setPosition (0);
+            stream.truncate();
+            juce::PNGImageFormat().writeImageToStream (img, stream);
+        };
+
+        mainComponent->grabKeyboardFocus();
+        press (juce::KeyPress (juce::KeyPress::F6Key), "F6");
+        press (juce::KeyPress (juce::KeyPress::tabKey), "Tab");
+        press (juce::KeyPress (juce::KeyPress::tabKey), "Tab");
+        press (juce::KeyPress (juce::KeyPress::tabKey), "Tab");
+        snapshot ("focus-ring");
+
+        switchTheme (Themes::darkMoreContrast, true);
+        snapshot ("more-contrast-dark");
+        switchTheme (Themes::lightMoreContrast, true);
+        snapshot ("more-contrast-light");
+        switchTheme (Themes::light, true);
+        snapshot ("light");
+
+        file.replaceWithText (out);
         quit();
     }
 
@@ -2246,6 +2500,9 @@ private:
             appearance.addItem (6100, "Auto (match macOS)", true, current == "auto");
             appearance.addItem (6101, "Light", true, current == "light");
             appearance.addItem (6102, "Dark", true, current == "dark");
+            appearance.addSeparator();
+            appearance.addItem (6103, A11y::settings().moreContrast ? "Increase Contrast (on in " + systemSettingsName() + ")" : juce::String ("Increase Contrast"),
+                                ! A11y::settings().moreContrast, wantsMoreContrast());
             m.addSubMenu ("Appearance", appearance);
             m.addSeparator();
             m.addCommandItem (cm, cmdMidiLearn);
@@ -2274,6 +2531,12 @@ private:
         else if (itemID >= 6100 && itemID <= 6102)
         {
             engine->getPropertyStorage().getPropertiesFile().setValue ("appearance", juce::StringArray { "auto", "light", "dark" }[itemID - 6100]);
+            applyAppearance (true);
+        }
+        else if (itemID == 6103)
+        {
+            auto& file = engine->getPropertyStorage().getPropertiesFile();
+            file.setValue ("moreContrast", ! file.getBoolValue ("moreContrast", false));
             applyAppearance (true);
         }
         else if (itemID == 6200)

@@ -371,7 +371,7 @@ public:
         if (clip == nullptr)
         {
             bool recording = Launcher::isRecordingSlot (*slot);
-            g.setColour (recording ? Colours::record.withAlpha (flash ? 0.35f : 0.2f)
+            g.setColour (recording ? Colours::record.withAlpha (A11y::reduceMotion() ? 0.3f : flash ? 0.35f : 0.2f)
                                    : isDragOver ? Colours::accent.withAlpha (0.2f) : Colours::panel);
             g.fillRoundedRectangle (r, round);
 
@@ -409,15 +409,23 @@ public:
         g.setColour (selected ? colour.withAlpha (0.4f) : Theme::tint (colour));
         g.fillRoundedRectangle (r, round);
 
-        // Launch key: a disc, ink while playing, flashing while queued
+        // Launch key: a disc, ink while playing, flashing while queued. With Reduce Motion a queued
+        // clip holds still instead: an ink ring round the disc, waiting for its bar
         auto disc = r.removeFromLeft (r.getHeight()).withSizeKeepingCentre (r.getHeight() - 6.0f, r.getHeight() - 6.0f);
-        const bool lit = playing || (queued && flash);
+        const bool steady = A11y::reduceMotion();
+        const bool lit = playing || (queued && ! steady && flash);
         g.setColour (lit ? Colours::text : Colours::background.withAlpha (0.5f));
         g.fillEllipse (disc);
+
+        if (queued && steady)
+        {
+            g.setColour (Colours::text);
+            g.drawEllipse (disc.reduced (0.75f), 1.5f);
+        }
         auto tri = disc.reduced (disc.getWidth() * 0.3f).translated (disc.getWidth() * 0.04f, 0.0f);
         juce::Path p;
         p.addTriangle (tri.getX(), tri.getY(), tri.getX(), tri.getBottom(), tri.getRight(), tri.getCentreY());
-        g.setColour (lit ? Colours::textInverse : Theme::tintLabel (colour));
+        g.setColour (lit ? Colours::textInverse : queued && steady ? Colours::text : Theme::tintLabel (colour));
         g.fillPath (p);
 
         g.setColour (Theme::tintLabel (colour));
@@ -477,6 +485,54 @@ public:
 
         if (onButton)
             Launcher::userLaunchClip (*clip);
+    }
+
+    /** What clicking the slot's key does: launch its clip, or (empty) record into it or stop the track. */
+    void pressLaunchKey()
+    {
+        viewState.focusTrack (track.get());
+
+        if (auto clip = slot->getClip())
+        {
+            viewState.selectionManager.selectOnly (clip);
+            Launcher::userLaunchClip (*clip);
+            return;
+        }
+
+        if (Launcher::isRecordingSlot (*slot))
+            Launcher::stopSlotRecording (track->edit);
+        else if (EngineHelpers::isTrackArmed (*track))
+            Launcher::recordIntoSlot (*track, *slot);
+        else
+            Launcher::userStopTrack (*track);
+
+        viewState.selectionManager.selectOnly (track.get());
+        repaint();
+    }
+
+    /** Screen readers: the clip's name (or "Empty slot") and what it's doing; pressing it does
+        what clicking its key does. */
+    std::unique_ptr<juce::AccessibilityHandler> createAccessibilityHandler() override
+    {
+        return std::make_unique<A11y::Handler> (*this, juce::AccessibilityRole::button,
+            A11y::Handler::Info {
+                [this] { auto c = slot->getClip(); return c != nullptr ? c->getName() : juce::String ("Empty slot"); },
+                [this] { return TrackSpeech::name (*track); },
+                [this] () -> juce::String
+                {
+                    if (auto c = slot->getClip())
+                    {
+                        bool queued = false;
+                        const bool playing = Launcher::isPlayingOrQueued (*c, queued);
+                        return queued ? "queued" : playing ? "playing" : "stopped";
+                    }
+
+                    if (Launcher::isRecordingSlot (*slot))          return "recording";
+                    if (EngineHelpers::isTrackArmed (*track))       return "press to record";
+                    return "press to stop the track";
+                },
+                {} },
+            juce::AccessibilityActions().addAction (juce::AccessibilityActionType::press, [this] { pressLaunchKey(); }));
     }
 
     void mouseDoubleClick (const juce::MouseEvent&) override
@@ -621,6 +677,7 @@ public:
         }
 
         stopButton.onClick = [this] { Launcher::userStopTrack (*track); };
+        stopButton.setTitle ("Stop Track");
         addAndMakeVisible (stopButton);
 
         for (auto* b : { &armButton, &soloButton, &muteButton })
@@ -639,6 +696,7 @@ public:
 
         inputButton.onClick = [this] { showInputMenu (*track, &inputButton); };
         inputButton.setColour (juce::TextButton::buttonColourId, Colours::panelDark);
+        inputButton.setDescription ("Input");
         addAndMakeVisible (inputButton);
 
         volume = std::make_unique<ParameterSlider> (*t.getVolumePlugin()->volParam, juce::Slider::LinearVertical);
@@ -780,7 +838,8 @@ private:
     te::AudioTrack::Ptr track;
     juce::OwnedArray<SessionSlot> slots;
     juce::TextButton stopButton { juce::String::fromUTF8 ("\xe2\x96\xa0") };
-    SmallToggle muteButton { "m", Colours::mute }, soloButton { "s", Colours::solo }, armButton { juce::String::fromUTF8 ("\xe2\x97\x8f"), Colours::record };
+    SmallToggle muteButton { "m", Colours::mute, "Mute" }, soloButton { "s", Colours::solo, "Solo" },
+                armButton { juce::String::fromUTF8 ("\xe2\x97\x8f"), Colours::record, "Record Arm" };
     juce::TextButton inputButton;
     std::unique_ptr<ParameterSlider> volume, pan;
     std::unique_ptr<LevelMeter> meter;
@@ -944,7 +1003,7 @@ public:
 private:
     EditViewState& viewState;
     te::FolderTrack::Ptr track;
-    SmallToggle muteButton { "m", Colours::mute }, soloButton { "s", Colours::solo };
+    SmallToggle muteButton { "m", Colours::mute, "Mute" }, soloButton { "s", Colours::solo, "Solo" };
     std::unique_ptr<ParameterSlider> volume, pan;
     std::unique_ptr<LevelMeter> meter;
     juce::OwnedArray<ParameterSlider> sendKnobs;

@@ -86,7 +86,14 @@ enum CommandIDs
     cmdPrevTransient,
     cmdNextTransient,
     cmdGoToMarker1,     // ...to cmdGoToMarker1 + 8
-    cmdGoToMarkerLast = cmdGoToMarker1 + 8
+    cmdGoToMarkerLast = cmdGoToMarker1 + 8,
+    cmdSelectPrevTrack,
+    cmdSelectNextTrack,
+    cmdMuteTrack,
+    cmdSoloTrack,
+    cmdArmTrack,
+    cmdNextArea,
+    cmdPrevArea
 };
 
 //==============================================================================
@@ -164,6 +171,9 @@ public:
 
     std::function<void()> onTitleChanged;
 
+    /** The parts of the window with controls, in the order F6 moves through them. */
+    std::vector<juce::Component*> getFocusRegions() const;
+
     /** Ticks and names in the menu bar may have changed. */
     std::function<void()> onMenuStateChanged;
 
@@ -189,6 +199,7 @@ private:
     std::unique_ptr<Takes::Recorder> takeRecorder;      // keeps each recording (and loop pass) as a take
     std::unique_ptr<DrumTrack::Watcher> drumWatcher;
     juce::TooltipWindow tooltips { this, 500 };
+    A11y::FocusRing focusRing;   // shows which control has focus while navigating by keyboard
 
     void startCollaboration();
 
@@ -228,6 +239,11 @@ public:
 private:
     void showMissingAudio (const juce::String& intro);
     void moveToTransient (bool forwards, int attempt = 0);
+
+    /** The tracks in the order the arrangement shows them (groups' hidden tracks left out). */
+    juce::Array<te::Track*> getShownTracks() const;
+    void selectTrackFromKeyboard (int delta);
+    juce::StringArray lastPhones;   // Somewhere phones connected last time, to announce changes
     bool isViewShowing (ViewLayout::MainView v) const  { return layout.view == v; }
 
     void changeListenerCallback (juce::ChangeBroadcaster*) override;

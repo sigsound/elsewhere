@@ -30,6 +30,7 @@ public:
         menuButton.setTooltip ("Show or hide tracks");
         menuButton.setColour (juce::TextButton::buttonColourId, Colours::panelLight);
         menuButton.onClick = [this] { showMenu(); };
+        menuButton.setTitle ("Show or Hide Tracks");
         addAndMakeVisible (menuButton);
 
         viewState.edit.state.addListener (this);

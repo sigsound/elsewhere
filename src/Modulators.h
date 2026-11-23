@@ -221,6 +221,7 @@ public:
         power.setClickingTogglesState (true);
         power.setColour (juce::TextButton::buttonOnColourId, colour());
         power.onClick = [this] { lfo->enabledParam->setParameter (power.getToggleState() ? 1.0f : 0.0f, juce::sendNotification); };
+        power.setTitle ("Modulator On");
         addAndMakeVisible (power);
 
         menuButton.onClick = [this]
@@ -233,6 +234,7 @@ public:
             });
             m.showMenuAsync ({});
         };
+        menuButton.setTitle ("Modulator Menu");
         addAndMakeVisible (menuButton);
 
         rebuildTargets();

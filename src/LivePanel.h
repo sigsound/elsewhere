@@ -6,6 +6,7 @@
 #include "Live.h"
 #include "EditViewState.h"
 #include "Theme.h"
+#include "Accessibility.h"
 
 namespace elsewhere
 {
@@ -53,6 +54,20 @@ public:
         shareLaunches.onClick = [this] { live.setSharingLaunches (shareLaunches.getToggleState()); };
         addAndMakeVisible (shareLaunches);
 
+        modeBox.setTitle ("Mode");
+        intervalBox.setTitle ("Interval");
+
+        // The explanation is a label, so screen readers can read it
+        explanation.setFont (juce::FontOptions (12.0f));
+        explanation.setColour (juce::Label::textColourId, Colours::textDim);
+        explanation.setJustificationType (juce::Justification::topLeft);
+        explanation.setBorderSize ({});
+        explanation.setMinimumHorizontalScale (1.0f);
+        addAndMakeVisible (explanation);
+
+        setTitle ("Live Session");
+        setFocusContainerType (juce::Component::FocusContainerType::focusContainer);
+
         live.onPeersChanged = [this] { rebuildPeers(); };
         rebuildPeers();
         refresh();
@@ -69,29 +84,9 @@ public:
         auto r = getLocalBounds().reduced (10);
         r.removeFromTop (30);
 
-        // Explanation / status
-        g.setColour (Colours::textDim);
-        g.setFont (juce::FontOptions (12.0f));
+        // The explanation (a label) goes here
+        r.removeFromTop (34);
         auto bars = live.getBarsPerInterval();
-        juce::String text;
-
-        if (! collab.isActive())
-            text = "Live sessions work in shared projects. Turn on sharing (File > Share Project...) and put the project in "
-                   "Google Drive or Dropbox; when your collaborator opens it and also goes live, you'll connect automatically.";
-        else if (! live.isActive())
-            text = "Go live to play together. Everyone plays to the same tempo and hears each other exactly one interval ("
-                   + juce::String (bars) + (bars == 1 ? " bar" : " bars") + ") late, so internet delay doesn't matter.";
-        else if (live.getPeers().empty())
-            text = "You're live. Waiting for collaborators to go live in this project... (connecting can take up to a "
-                   "minute while the cloud folder syncs)";
-        else if (live.isRealtime())
-            text = "Low latency: you hear each other almost immediately, like being in the same room. It feels natural "
-                   "under about 30 ms; a wired connection and a small audio buffer (128 samples) help.";
-        else
-            text = "Press play and jam. You hear everyone " + juce::String (bars) + (bars == 1 ? " bar" : " bars")
-                   + " late, in time with your bars. They hear you the same way.";
-
-        g.drawFittedText (text, r.removeFromTop (34), juce::Justification::topLeft, 2);
 
         // Interval countdown
         if (live.isActive() && ! live.isRealtime())
@@ -125,6 +120,31 @@ public:
         }
     }
 
+    /** What the panel says under its controls: how to start, or what's happening. */
+    juce::String getExplanation() const
+    {
+        auto bars = live.getBarsPerInterval();
+        juce::String text;
+
+        if (! collab.isActive())
+            text = "Live sessions work in shared projects. Turn on sharing (File > Share Project...) and put the project in "
+                   "Google Drive or Dropbox; when your collaborator opens it and also goes live, you'll connect automatically.";
+        else if (! live.isActive())
+            text = "Go live to play together. Everyone plays to the same tempo and hears each other exactly one interval ("
+                   + juce::String (bars) + (bars == 1 ? " bar" : " bars") + ") late, so internet delay doesn't matter.";
+        else if (live.getPeers().empty())
+            text = "You're live. Waiting for collaborators to go live in this project... (connecting can take up to a "
+                   "minute while the cloud folder syncs)";
+        else if (live.isRealtime())
+            text = "Low latency: you hear each other almost immediately, like being in the same room. It feels natural "
+                   "under about 30 ms; a wired connection and a small audio buffer (128 samples) help.";
+        else
+            text = "Press play and jam. You hear everyone " + juce::String (bars) + (bars == 1 ? " bar" : " bars")
+                   + " late, in time with your bars. They hear you the same way.";
+
+        return text;
+    }
+
     void resized() override
     {
         auto r = getLocalBounds().reduced (10);
@@ -136,6 +156,7 @@ public:
         top.removeFromLeft (80);
         intervalBox.setBounds (top.removeFromLeft (100));
         intervalBox.setVisible (! live.isRealtime());
+        explanation.setBounds (r.withHeight (4 + 34).withTrimmedTop (4));
 
         // Room for the explanation, plus the interval countdown in interval mode
         r.removeFromTop (4 + 34 + (live.isActive() && ! live.isRealtime() ? 26 + 4 + 16 : 0) + 8);
@@ -155,13 +176,48 @@ private:
             volume.setValue (status.gain, juce::dontSendNotification);
             volume.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
             volume.onValueChange = [this] { live.setPeerGain (status.userId, (float) volume.getValue()); };
+            volume.textFromValueFunction = [] (double v) { return juce::String (juce::roundToInt (v * 100.0)) + "%"; };
+            volume.setTitle ("Volume");
+            volume.setWantsKeyboardFocus (true);
+            volume.setMouseClickGrabsKeyboardFocus (false);
             addAndMakeVisible (volume);
 
+            mute.setTitle ("Mute");
             mute.setClickingTogglesState (true);
             mute.setToggleState (status.muted, juce::dontSendNotification);
             mute.setColour (juce::TextButton::buttonOnColourId, Colours::mute);
             mute.onClick = [this] { live.setPeerMuted (status.userId, mute.getToggleState()); };
             addAndMakeVisible (mute);
+            setFocusContainerType (juce::Component::FocusContainerType::focusContainer);
+        }
+
+        juce::String peerName() const   { return status.name.isNotEmpty() ? status.name : juce::String ("Someone"); }
+
+        /** "Connected - ~40 ms delay ...": the same detail the row shows. */
+        juce::String getDetail() const
+        {
+            juce::String detail = status.state;
+
+            if (status.connected && status.estimatedLatencyMs > 0.0)
+            {
+                detail << "  -  ~" << juce::roundToInt (status.estimatedLatencyMs) << " ms delay (buffer "
+                       << juce::roundToInt (status.jitterBufferMs) << " ms)";
+                if (std::abs (status.clockDriftPpm) >= 1.0)
+                    detail << "  -  clock " << (status.clockDriftPpm > 0 ? "+" : "") << juce::roundToInt (status.clockDriftPpm) << " ppm";
+            }
+            else if (status.connected)
+                detail << "  -  " << juce::roundToInt (status.roundTripMs) << " ms";
+
+            if (bpmMismatch)
+                detail << "  -  their tempo is " << juce::String (status.theirBpm, 1) << " BPM!";
+
+            return detail;
+        }
+
+        std::unique_ptr<juce::AccessibilityHandler> createAccessibilityHandler() override
+        {
+            return std::make_unique<A11y::Handler> (*this, juce::AccessibilityRole::group,
+                A11y::Handler::Info { [this] { return peerName(); }, [this] { return getDetail(); }, {}, {} });
         }
 
         void update (const Live::PeerStatus& s, double ourBpm)
@@ -185,26 +241,12 @@ private:
 
             g.setColour (Colours::text);
             g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
-            g.drawText (status.name.isNotEmpty() ? status.name : juce::String ("Someone"), r.removeFromLeft (120), juce::Justification::centredLeft, true);
+            g.drawText (peerName(), r.removeFromLeft (120), juce::Justification::centredLeft, true);
 
-            g.setColour (status.connected ? Colours::meterGreen : Colours::textDim);
+            // Connected or not is in the words ("Connected", "Connecting..."), not just the colour
+            g.setColour (status.connected ? Theme::readable (Colours::meterGreen) : Colours::textDim);
             g.setFont (juce::FontOptions (11.5f));
-            juce::String detail = status.state;
-
-            if (status.connected && status.estimatedLatencyMs > 0.0)
-            {
-                detail << "  -  ~" << juce::roundToInt (status.estimatedLatencyMs) << " ms delay (buffer "
-                       << juce::roundToInt (status.jitterBufferMs) << " ms)";
-                if (std::abs (status.clockDriftPpm) >= 1.0)
-                    detail << "  -  clock " << (status.clockDriftPpm > 0 ? "+" : "") << juce::roundToInt (status.clockDriftPpm) << " ppm";
-            }
-            else if (status.connected)
-                detail << "  -  " << juce::roundToInt (status.roundTripMs) << " ms";
-
-            if (bpmMismatch)
-                detail << "  -  their tempo is " << juce::String (status.theirBpm, 1) << " BPM!";
-
-            g.drawText (detail, r.removeFromLeft (330), juce::Justification::centredLeft, true);
+            g.drawText (getDetail(), r.removeFromLeft (330), juce::Justification::centredLeft, true);
 
             // Their level
             auto meter = r.removeFromLeft (120).withSizeKeepingCentre (110, 8).toFloat();
@@ -238,15 +280,33 @@ private:
     juce::Label intervalLabel { {}, "Interval" }, modeLabel { {}, "Mode" };
     juce::ComboBox modeBox;
     juce::ToggleButton shareLaunches;
+    juce::Label explanation;
     juce::OwnedArray<PeerRow> rows;
+    juce::StringArray peerNames;
     int lastLayoutKey = -1;
 
     void rebuildPeers()
     {
         rows.clear();
+        juce::StringArray names;
 
         for (auto& p : live.getPeers())
-            addAndMakeVisible (rows.add (new PeerRow (live, p)));
+        {
+            auto* row = rows.add (new PeerRow (live, p));
+            addAndMakeVisible (row);
+            names.add (row->peerName());
+        }
+
+        // Screen readers hear who joined and who left
+        for (auto& n : names)
+            if (! peerNames.contains (n))
+                A11y::announce (n + " joined the live session");
+
+        for (auto& n : peerNames)
+            if (! names.contains (n))
+                A11y::announce (n + " left the live session");
+
+        peerNames = names;
 
         resized();
         repaint();
@@ -259,6 +319,7 @@ private:
         intervalBox.setSelectedId (live.getBarsPerInterval(), juce::dontSendNotification);
         modeBox.setSelectedId (live.isRealtime() ? 2 : 1, juce::dontSendNotification);
         shareLaunches.setToggleState (live.isSharingLaunches(), juce::dontSendNotification);
+        explanation.setText (getExplanation(), juce::dontSendNotification);
 
         auto layoutKey = (live.isActive() ? 1 : 0) + (live.isRealtime() ? 2 : 0);
 

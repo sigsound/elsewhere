@@ -316,7 +316,64 @@ inline void showTrackMenu (te::Track& track, EditViewState& evs, std::function<v
 }
 
 //==============================================================================
-/** Left-hand header for a track in the Arrangement view (audio, MIDI, group, return or master). */
+/** How a track is described to screen readers. */
+namespace TrackSpeech
+{
+    inline juce::String name (const te::Track& t)
+    {
+        return t.isMasterTrack() ? juce::String ("Main") : t.getName();
+    }
+
+    /** The name of the track's colour from the colour menu ("Ember"), if it has one of those. */
+    inline juce::String colourName (const te::Track& t)
+    {
+        const auto c = t.getColour();
+
+        for (int i = 0; i < 12; ++i)
+            if (c.getARGB() == EngineHelpers::trackColourFor (i).getARGB())
+                return Themes::colourNames[i];
+
+        return {};
+    }
+
+    /** What kind of track it is and its colour: "group, Ember". */
+    inline juce::String kind (const te::Track& t)
+    {
+        juce::StringArray parts;
+        parts.add (t.isMasterTrack() ? "main output" : t.isFolderTrack() ? "group" : Mixing::isReturnTrack (t) ? "return track" : "track");
+
+        if (! t.isMasterTrack())
+            parts.add (colourName (t));
+
+        parts.removeEmptyStrings();
+        return parts.joinIntoString (", ");
+    }
+
+    /** What's switched on: "muted, soloed, armed". */
+    inline juce::String states (te::Track& t)
+    {
+        juce::StringArray parts;
+
+        if (t.isMuted (false))  parts.add ("muted");
+        if (t.isSolo (false))   parts.add ("soloed");
+
+        if (auto at = dynamic_cast<te::AudioTrack*> (&t))
+            if (EngineHelpers::isTrackArmed (*at))
+                parts.add ("armed");
+
+        return parts.joinIntoString (", ");
+    }
+
+    /** All of it, for announcing a track when it's selected from the keyboard. */
+    inline juce::String describe (te::Track& t)
+    {
+        juce::StringArray parts { name (t), kind (t), states (t) };
+        parts.removeEmptyStrings();
+        return parts.joinIntoString (", ");
+    }
+}
+
+//==============================================================================
 /** A small send knob: the return's letter, blue when post-fader, yellow when pre-fader.
     Right-click to switch between pre- and post-fader. */
 class SendKnob : public juce::Component
@@ -327,6 +384,7 @@ public:
     {
         knob.addMouseListener (this, false);
         addAndMakeVisible (knob);
+        setFocusContainerType (juce::Component::FocusContainerType::focusContainer);
         update();
     }
 
@@ -337,14 +395,21 @@ public:
         auto tip = "Send to Return " + Mixing::busLetter (send->getBusNumber()) + (pre ? " (pre-fader)" : " (post-fader)")
                    + ". Right-click to switch.";
         knob.setTooltip (tip);
+        knob.setTitle ("Send to Return " + Mixing::busLetter (send->getBusNumber()));
+        knob.setDescription (pre ? "pre-fader" : "post-fader");
         repaint();
     }
 
     void paint (juce::Graphics& g) override
     {
+        auto letter = getLocalBounds().removeFromLeft (8);
         g.setColour (Colours::textDim);
         g.setFont (juce::FontOptions (9.0f, juce::Font::bold));
-        g.drawText (Mixing::busLetter (send->getBusNumber()), getLocalBounds().removeFromLeft (8), juce::Justification::centred);
+        g.drawText (Mixing::busLetter (send->getBusNumber()), letter, juce::Justification::centred);
+
+        // Pre-fader sends underline their letter, so the difference isn't only the knob's colour
+        if (Mixing::isPreFader (*track, *send))
+            g.fillRect (juce::Rectangle<float> (6.0f, 1.0f).withCentre ({ (float) letter.getCentreX(), (float) letter.getCentreY() + 6.0f }));
     }
 
     void resized() override     { knob.setBounds (getLocalBounds().withTrimmedLeft (8).expanded (0, 2)); }
@@ -386,6 +451,9 @@ public:
         name.setEditable (false, true, false);
         name.onTextChange = [this] { track->setName (name.getText()); };
         addAndMakeVisible (name);
+
+        // Screen readers see each header as a group named after its track, holding its controls
+        setFocusContainerType (juce::Component::FocusContainerType::focusContainer);
 
         audioTrack = dynamic_cast<te::AudioTrack*> (&t);
         folderTrack = dynamic_cast<te::FolderTrack*> (&t);
@@ -462,6 +530,7 @@ public:
 
         if (folderTrack != nullptr)
         {
+            collapseButton.setToggleable (true);
             collapseButton.onClick = [this]
             {
                 auto& set = viewState.collapsedGroups;
@@ -473,6 +542,7 @@ public:
 
         if (audioTrack != nullptr)
         {
+            arrangementButton.setTitle ("Back to Arrangement");
             arrangementButton.setTooltip ("This track is playing Session clips, so its Arrangement clips are silent. "
                                           "Click to go back to the Arrangement.");
             arrangementButton.setColour (juce::TextButton::buttonColourId, Colours::accent);
@@ -514,6 +584,25 @@ public:
     te::Track* getTrack() const     { return track.get(); }
 
     std::function<void()> onToggleAutomation;
+
+    std::unique_ptr<juce::AccessibilityHandler> createAccessibilityHandler() override
+    {
+        return std::make_unique<A11y::Handler> (*this, juce::AccessibilityRole::group,
+            A11y::Handler::Info {
+                [this] { return TrackSpeech::name (*track); },
+                [this] { return TrackSpeech::kind (*track); },
+                {},
+                [this] (juce::AccessibleState s)
+                {
+                    s = s.withSelectable();
+                    return viewState.selectionManager.isSelected (track.get()) ? s.withSelected() : s;
+                } },
+            juce::AccessibilityActions().addAction (juce::AccessibilityActionType::press, [this]
+            {
+                viewState.selectionManager.selectOnly (track.get());
+                viewState.focusTrack (track.get());
+            }));
+    }
 
     void paint (juce::Graphics& g) override
     {
@@ -709,9 +798,9 @@ private:
 
     juce::Label name;
     juce::Rectangle<int> colourDisc;
-    SmallToggle muteButton { "m", Colours::mute }, soloButton { "s", Colours::solo },
-                armButton { juce::String::fromUTF8 ("\xe2\x97\x8f"), Colours::record },
-                automationButton { "a", Colours::accent }, takesButton { "", Colours::accent };
+    SmallToggle muteButton { "m", Colours::mute, "Mute" }, soloButton { "s", Colours::solo, "Solo" },
+                armButton { juce::String::fromUTF8 ("\xe2\x97\x8f"), Colours::record, "Record Arm" },
+                automationButton { "a", Colours::accent, "Automation Lane" }, takesButton { "", Colours::accent, "Take Lanes" };
     juce::TextButton arrangementButton { juce::String::fromUTF8 ("\xe2\x86\xa9") };   // back to arrangement
     juce::TextButton inputButton, outputButton;
     juce::ShapeButton collapseButton { "collapse", Colours::textDim, Colours::text, Colours::text };
@@ -811,6 +900,10 @@ private:
             juce::PathStrokeType (1.6f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded).createStrokedPath (outline, chevron);
             collapseButton.setShape (outline, false, true, false);
             collapseButton.setBorderSize (juce::BorderSize<int> (5));
+
+            const bool open = viewState.collapsedGroups.count (track->itemID) == 0;
+            collapseButton.setTitle ("Show Group's Tracks");
+            collapseButton.setToggleState (open, juce::dontSendNotification);
         }
 
         automationButton.setToggleState (viewState.automationLanes.count (track->itemID) > 0, juce::dontSendNotification);

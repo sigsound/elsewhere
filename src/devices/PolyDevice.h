@@ -1430,7 +1430,9 @@ public:
         for (auto* b : { &prevButton, &nextButton, &patchButton })
             addAndMakeVisible (b);
         prevButton.onClick = [this] { step (-1); };
+        prevButton.setTitle ("Previous Patch");
         nextButton.onClick = [this] { step (1); };
+        nextButton.setTitle ("Next Patch");
         patchButton.onClick = [this] { showPatchMenu(); };
 
         const auto cV = Colours::clips[5], cOut = Colours::accent;

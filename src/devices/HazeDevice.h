@@ -611,7 +611,9 @@ public:
         for (auto* b : { &prevButton, &nextButton, &patchButton })
             addAndMakeVisible (b);
         prevButton.onClick = [this] { step (-1); };
+        prevButton.setTitle ("Previous Patch");
         nextButton.onClick = [this] { step (1); };
+        nextButton.setTitle ("Next Patch");
         patchButton.onClick = [this] { showPatchMenu(); };
 
         const auto cTone = Colours::accent, cFilt = Colours::clips[4], cEnv = Colours::clips[2], cTape = Colours::clips[6],

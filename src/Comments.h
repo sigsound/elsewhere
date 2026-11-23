@@ -246,7 +246,9 @@ namespace Comments
             addAndMakeVisible (showResolved);
 
             prevButton.onClick = [this] { turn (-1); };
+            prevButton.setTitle ("Previous Comment");
             nextButton.onClick = [this] { turn (1); };
+            nextButton.setTitle ("Next Comment");
             addAndMakeVisible (prevButton);
             addAndMakeVisible (nextButton);
 

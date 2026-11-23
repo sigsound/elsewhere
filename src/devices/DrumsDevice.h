@@ -932,7 +932,9 @@ public:
         for (auto* b : { &prevKit, &nextKit, &kitMenu })
             addAndMakeVisible (b);
         prevKit.onClick = [this] { stepKit (-1); };
+        prevKit.setTitle ("Previous Kit");
         nextKit.onClick = [this] { stepKit (1); };
+        nextKit.setTitle ("Next Kit");
         kitMenu.onClick = [this] { showKitMenu(); };
 
         for (auto* b : { &kitButton, &padsButton })

@@ -26,6 +26,9 @@ public:
         isMaster = t.isMasterTrack();
         isReturn = Mixing::isReturnTrack (t);
 
+        // Screen readers see each strip as a group named after its track, holding its controls
+        setFocusContainerType (juce::Component::FocusContainerType::focusContainer);
+
         te::VolumeAndPanPlugin* vp = nullptr;
         te::LevelMeterPlugin* lm = nullptr;
 
@@ -65,6 +68,7 @@ public:
         level.setColour (juce::Label::textColourId, Colours::text);
         level.setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
         level.setColour (juce::Label::textColourId, Colours::textDim);
+        level.setDescription ("Fader level");
         addAndMakeVisible (level);
 
         // Input (recording tracks) and output
@@ -72,6 +76,7 @@ public:
         {
             inputButton.onClick = [this] { showInputMenu (*audioTrack, &inputButton); };
             inputButton.setTooltip ("Input");
+            inputButton.setDescription ("Input");
             styleRoutingButton (inputButton);
             addAndMakeVisible (inputButton);
 
@@ -88,6 +93,7 @@ public:
 
         outputButton.onClick = [this] { showOutputMenu (*track, &outputButton); };
         outputButton.setTooltip ("Output");
+        outputButton.setDescription ("Output");
         styleRoutingButton (outputButton);
         addAndMakeVisible (outputButton);
 
@@ -118,6 +124,7 @@ public:
         }
 
         addInsert.setTooltip ("Add a device or plug-in");
+        addInsert.setTitle ("Add Device");
         addInsert.setColour (juce::TextButton::buttonColourId, Colours::panelDark);
         addInsert.setColour (juce::TextButton::textColourOffId, Colours::textDim);
         addInsert.onClick = [this] { PluginMenu::showForTrack (*track, -1, &addInsert, [this] (te::Plugin& p) { openPlugin (p); }); };
@@ -138,6 +145,17 @@ public:
 
     te::Track* getTrack() const     { return track.get(); }
     int getNumInserts() const       { return plugins.size(); }
+
+    std::unique_ptr<juce::AccessibilityHandler> createAccessibilityHandler() override
+    {
+        return std::make_unique<A11y::Handler> (*this, juce::AccessibilityRole::group,
+            A11y::Handler::Info { [this] { return TrackSpeech::name (*track); }, [this] { return TrackSpeech::kind (*track); }, {}, {} },
+            juce::AccessibilityActions().addAction (juce::AccessibilityActionType::press, [this]
+            {
+                if (! isMaster)
+                    viewState.focusTrack (track.get());
+            }));
+    }
 
     /** All the strips line up: the mixer gives each one the same number of insert and send rows. */
     void setRows (int inserts, int sends)
@@ -319,7 +337,8 @@ private:
     std::unique_ptr<ParameterSlider> volume, pan;
     std::unique_ptr<LevelMeter> meter;
     juce::Label level;
-    SmallToggle muteButton { "m", Colours::mute }, soloButton { "s", Colours::solo }, armButton { juce::String::fromUTF8 ("\xe2\x97\x8f"), Colours::record };
+    SmallToggle muteButton { "m", Colours::mute, "Mute" }, soloButton { "s", Colours::solo, "Solo" },
+                armButton { juce::String::fromUTF8 ("\xe2\x97\x8f"), Colours::record, "Record Arm" };
     int insertRows = 5, sendRows = 1;
     juce::Rectangle<int> insertsLabel, sendsLabel;
 
@@ -407,8 +426,20 @@ private:
 
         outputButton.setButtonText (getOutputName (*track));
 
+        // A bypassed insert is dimmed (still readable) and struck through
         for (int i = 0; i < insertButtons.size(); ++i)
-            insertButtons[i]->setColour (juce::TextButton::textColourOffId, plugins[i]->isEnabled() ? Colours::text : Colours::textDim.withAlpha (0.6f));
+        {
+            auto* b = insertButtons[i];
+            const bool on = plugins[i]->isEnabled();
+            b->setColour (juce::TextButton::textColourOffId, on ? Colours::text : Colours::textDim);
+
+            if ((bool) b->getProperties()["struckThrough"] == on)
+            {
+                b->getProperties().set ("struckThrough", ! on);
+                b->setDescription (on ? juce::String() : juce::String ("bypassed"));
+                b->repaint();
+            }
+        }
 
         if (volumePlugin != nullptr)
         {
