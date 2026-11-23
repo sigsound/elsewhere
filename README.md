@@ -139,6 +139,13 @@ Dev flags:
 | F9 | Record |
 | Cmd+Z / Cmd+Shift+Z | Undo / redo |
 | Cmd+, | Audio / MIDI settings |
+| Up / Down | Select the track above / below |
+| Alt+M, Alt+S, Alt+R | Mute, solo, arm the selected track |
+| F6 / Shift+F6 | Move to the controls in the next / previous part of the window |
+
+The transport, tracks, mixer and devices can be used from the keyboard and with a screen reader
+(VoiceOver; Narrator and NVDA on Windows), and Elsewhere follows the system's Increase Contrast and
+Reduce Motion settings. See [Accessibility](docs/ACCESSIBILITY.md) for what works and what doesn't yet.
 
 ## Roadmap
 
