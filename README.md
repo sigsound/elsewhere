@@ -5,7 +5,7 @@
   </picture>
 </h1>
 
-*Join me in the Extended Present, in Elsewhere.*
+*Join us in the Extended Present, in Elsewhere.*
 
 Elsewhere is a free, open-source DAW, built for playing and producing music with other people remotely: 
 share a project through Dropbox or iCloud Drive and work on it together, or play live with each other in real time.
