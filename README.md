@@ -15,11 +15,11 @@ clip launching, rendering) and [JUCE](https://juce.com) (UI, CoreAudio, VST3/AU)
 or newer as a universal binary (Intel + Apple Silicon), and on 64-bit Windows with an installer or a portable zip
 (built by `.github/workflows/windows.yml`).
 
-**Download** the latest version from [the website](https://somewhere-elsewhere.vercel.app/elsewhere) or from
+**Download** the latest version from [the website](https://elsewhere.audio/) or from
 [GitHub Releases](https://github.com/sigsound/elsewhere/releases/latest).
 
 **Somewhere**, the companion sampler for iPhone and Android, sends what you record straight into Elsewhere
-and links with it over Wi-Fi. It's [sold separately](https://somewhere-elsewhere.vercel.app); the protocol it speaks is documented in
+and links with it over Wi-Fi. It's [sold separately](https://somewhere.audio/); the protocol it speaks is documented in
 `src/SomewhereLink.h`.
 
 ## A look around
