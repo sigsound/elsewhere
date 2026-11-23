@@ -11,12 +11,15 @@ Elsewhere is a free, open-source DAW, built for playing and producing music with
 share a project through Dropbox or iCloud Drive and work on it together, or play live with each other in real time.
 
 Built on [Tracktion Engine](https://github.com/Tracktion/tracktion_engine) (audio engine, plug-in hosting,
-clip launching, rendering) and [JUCE](https://juce.com) (UI, CoreAudio, VST3/AU). It ships as a universal binary
-(Intel + Apple Silicon) for macOS 10.15 Catalina or newer. A Windows build is in progress
-(`.github/workflows/windows.yml`).
+clip launching, rendering) and [JUCE](https://juce.com) (UI, CoreAudio, VST3/AU). It runs on macOS 10.15 Catalina
+or newer as a universal binary (Intel + Apple Silicon), and on 64-bit Windows with an installer or a portable zip
+(built by `.github/workflows/windows.yml`).
+
+**Download** the latest version from [the website](https://somewhere-elsewhere.vercel.app/elsewhere) or from
+[GitHub Releases](https://github.com/sigsound/elsewhere/releases/latest).
 
 **Somewhere**, the companion sampler for iPhone and Android, sends what you record straight into Elsewhere
-and links with it over Wi-Fi. It's sold separately; the protocol it speaks is documented in
+and links with it over Wi-Fi. It's [sold separately](https://somewhere-elsewhere.vercel.app); the protocol it speaks is documented in
 `src/SomewhereLink.h`.
 
 ## A look around
