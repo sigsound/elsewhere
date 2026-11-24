@@ -8,13 +8,13 @@
 namespace elsewhere
 {
 //==============================================================================
-MainComponent::MainComponent (te::Engine& e, const juce::File& editFile, AppActions& actions)
+MainComponent::MainComponent (te::Engine& e, const juce::File& editFile, AppActions& actions, bool recover)
     : engine (e), appActions (actions)
 {
     tooltips.setOpaque (false);   // so its rounded corners show what's behind
 
     const bool isNewProject = ! editFile.existsAsFile();
-    project = std::make_unique<Project> (engine, editFile);
+    project = std::make_unique<Project> (engine, editFile, recover);
     auto& edit = project->getEdit();
 
     viewState = std::make_unique<EditViewState> (edit, selectionManager);
@@ -1260,6 +1260,11 @@ void MainComponent::timerCallback()
     }
     else
     {
+        // Keep unsaved changes somewhere a crash can't take them (not mid-take: recording
+        // saves the project itself when it stops)
+        if (autosaveCounter % 20 == 0 && ! project->getEdit().getTransport().isRecording())
+            project->updateRecovery();
+
         // The project's name is the window's title, so the status only says what needs saying
         auto foreign = project->getForeignLock();
         transportBar->setStatusText (foreign ? "Also open by " + foreign->user + " (" + foreign->machine + ")" : juce::String());

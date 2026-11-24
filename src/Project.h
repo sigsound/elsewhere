@@ -56,17 +56,37 @@ public:
     }
 
     //==============================================================================
-    Project (te::Engine& e, const juce::File& file) : engine (e), editFile (file)
+    /** With recover, opens the unsaved changes kept from a session that didn't close properly
+        (see hasRecovery) in place of the saved file. */
+    Project (te::Engine& e, const juce::File& file, bool recover = false) : engine (e), editFile (file)
     {
         createSubfolders (getFolder());
 
         // Shared projects may have fresher (or intact) per-user snapshots than the main file
         auto source = chooseFileToLoad (editFile);
+        auto recovery = getRecoveryFile (engine, editFile);
+
+        if (recover && isReadable (recovery))
+        {
+            source = recovery;
+            openedFromRecovery = true;
+        }
+        else
+        {
+            // Left by a session that didn't close properly: kept until the question is answered
+            recoveryPending = recovery.existsAsFile();
+        }
 
         if (source.existsAsFile())
             edit = loadEdit (engine, source);
-        else
+
+        if (edit == nullptr)
+        {
+            // A file is there but can't be read (damaged, or half synced). Showing an empty
+            // project is all that's left, and it must never be saved over what's on disk
+            unreadable = editFile.existsAsFile();
             edit = te::createEmptyEdit (engine, editFile);
+        }
 
         edit->alwaysUseRelativePaths = true;
         edit->playInStopEnabled = true;
@@ -105,6 +125,11 @@ public:
         edit->getUndoManager().clearUndoHistory();
         acquireLock();
 
+        if (openedFromRecovery)
+            edit->markAsChanged();   // not on disk until it's saved
+
+        changes = std::make_unique<ChangeWatcher> (edit->state);
+
         // Write new projects to disk straight away so audio paths are always stored
         // the same way ("Samples/...", relative to the project folder)
         if (! editFile.existsAsFile())
@@ -113,7 +138,130 @@ public:
 
     ~Project()
     {
+        // Closed properly: whatever wasn't saved was left unsaved on purpose
+        if (! recoveryPending)
+            getRecoveryFile (engine, editFile).deleteFile();
+
         releaseLock();
+    }
+
+    //==============================================================================
+    // Recovery: while a project has unsaved changes a copy of it is kept outside the project
+    // folder (so it's this computer's alone, and nothing extra syncs), written every so often
+    // and deleted when the project is saved or closed. One that's still there on opening
+    // means Elsewhere didn't close properly.
+
+    static juce::File getRecoveryFile (te::Engine& engine, const juce::File& editFile)
+    {
+        auto id = juce::String::toHexString (editFile.getFullPathName().hashCode64());
+        return engine.getPropertyStorage().getAppPrefsFolder().getChildFile ("Recovery")
+                 .getChildFile (editFile.getFileNameWithoutExtension() + " " + id + fileExtension);
+    }
+
+    /** True if the file holds a project (and isn't cut short or half synced). */
+    static bool isReadable (const juce::File& f)
+    {
+        if (! f.existsAsFile())
+            return false;
+
+        auto xml = juce::XmlDocument::parse (f);
+        return xml != nullptr && xml->hasTagName ("EDIT");
+    }
+
+    /** True if the project file is there but nothing in it (or its shared snapshots) can be read. */
+    static bool isDamaged (const juce::File& editFile)
+    {
+        return editFile.existsAsFile() && ! chooseFileToLoad (editFile).existsAsFile();
+    }
+
+    /** When unsaved changes from a session that didn't close properly are waiting, the time
+        they were last written. */
+    static std::optional<juce::Time> getRecoveryTime (te::Engine& engine, const juce::File& editFile)
+    {
+        auto f = getRecoveryFile (engine, editFile);
+
+        if (! isReadable (f))
+            return std::nullopt;
+
+        return f.getLastModificationTime();
+    }
+
+    /** True while an earlier session's unsaved changes are waiting for an answer. */
+    bool hasRecoveryPending() const     { return recoveryPending; }
+
+    /** Opened as an empty project because the file couldn't be read: it won't save. */
+    bool isUnreadable() const           { return unreadable; }
+
+    /** The answer was "open the last saved one": the unsaved changes go into Backups, where
+        Version History finds them, and this session keeps its own recovery copy from now on. */
+    void setRecoveryAside()
+    {
+        if (! recoveryPending)
+            return;
+
+        auto f = getRecoveryFile (engine, editFile);
+        auto backups = getFolder().getChildFile ("Backups");
+        backups.createDirectory();
+        auto stamp = f.getLastModificationTime().formatted ("%Y-%m-%d %H-%M-%S");
+
+        if (! f.moveFileTo (backups.getNonexistentChildFile (getName() + " " + stamp + " unsaved", fileExtension, false)))
+            f.deleteFile();
+
+        recoveryPending = false;
+    }
+
+    /** Call regularly: writes the recovery copy when there are unsaved changes it doesn't have yet.
+        Returns true if it wrote one. */
+    bool updateRecovery()
+    {
+        if (recoveryPending || unreadable || changes == nullptr || ! changes->changed
+             || ! edit->hasChangedSinceSaved() || edit->isSaveInhibited())
+            return false;
+
+        edit->flushState();   // devices and plug-ins put their settings into the project
+        auto xml = edit->state.createXml();
+        auto file = getRecoveryFile (engine, editFile);
+        file.getParentDirectory().createDirectory();
+        juce::TemporaryFile temp (file);
+
+        if (xml == nullptr || ! xml->writeTo (temp.getFile()) || ! temp.overwriteTargetFileWithTemporary())
+            return false;
+
+        changes->changed = false;
+        return true;
+    }
+
+    /** For a damaged project file: puts the newest backup that can be read in its place, keeping
+        the damaged file in Backups. Returns the backup used. */
+    static std::optional<juce::File> restoreLatestBackup (const juce::File& editFile)
+    {
+        auto backups = editFile.getParentDirectory().getChildFile ("Backups");
+        auto files = backups.findChildFiles (juce::File::findFiles, false, "*" + editFile.getFileExtension());
+        std::sort (files.begin(), files.end(), [] (const juce::File& a, const juce::File& b)
+                   { return a.getLastModificationTime() > b.getLastModificationTime(); });
+
+        for (auto& f : files)
+        {
+            // Saved versions only: changes that were set aside unsaved stay in Version History
+            if (f.getFileNameWithoutExtension().endsWith (" unsaved") || ! isReadable (f))
+                continue;
+
+            auto stamp = juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H-%M-%S");
+            auto aside = backups.getNonexistentChildFile (editFile.getFileNameWithoutExtension() + " " + stamp + " damaged", ".damaged", false);
+
+            if (editFile.existsAsFile() && ! editFile.moveFileTo (aside))
+                return std::nullopt;
+
+            if (! f.copyFileTo (editFile))
+            {
+                aside.moveFileTo (editFile);
+                return std::nullopt;
+            }
+
+            return f;
+        }
+
+        return std::nullopt;
     }
 
     te::Edit& getEdit()                 { return *edit; }
@@ -220,13 +368,20 @@ public:
         when it wasn't; pass false to show your own. */
     bool save (bool warnOfFailure = true)
     {
+        if (unreadable)
+            return false;   // what's on disk may be the only copy of the real project
+
         if (beforeSave)
             beforeSave();
 
         if (savedByName.isNotEmpty())
             edit->state.setProperty ("elsewhereSavedBy", savedByName, nullptr);
 
-        makeBackup();
+        // Someone else's save (a synced folder), or one from before backups held the latest
+        // save: keep it before it's replaced
+        if (editFile.getLastModificationTime() != backedUpModTime && ! isInBackups())
+            makeBackup();
+
         // The answer comes back before save() returns, unless the engine is showing its own
         // failure message (which answers later, and then only "not saved" matters)
         auto written = std::make_shared<bool> (false);
@@ -235,6 +390,19 @@ public:
 
         if (afterSave)
             afterSave();
+
+        if (ok)
+        {
+            // Backups always hold what was last saved, so a project file that gets damaged
+            // loses nothing
+            makeBackup();
+
+            if (! recoveryPending)
+                getRecoveryFile (engine, editFile).deleteFile();
+
+            if (changes != nullptr)
+                changes->changed = false;
+        }
 
         lastSaveTime = juce::Time::getCurrentTime();
         return ok;
@@ -354,6 +522,50 @@ private:
     juce::File editFile;
     std::unique_ptr<te::Edit> edit;
     juce::Time lastSaveTime;
+    bool recoveryPending = false, openedFromRecovery = false, unreadable = false;
+    juce::Time backedUpModTime;     // the project file as it was when it last went into Backups
+
+    /** Notes that something in the project changed, so the recovery copy is only rewritten
+        when there's something new to keep. */
+    struct ChangeWatcher : private juce::ValueTree::Listener
+    {
+        explicit ChangeWatcher (const juce::ValueTree& v) : state (v)     { state.addListener (this); }
+        ~ChangeWatcher() override                                         { state.removeListener (this); }
+
+        bool changed = false;
+
+    private:
+        juce::ValueTree state;
+
+        void valueTreePropertyChanged (juce::ValueTree&, const juce::Identifier&) override   { changed = true; }
+        void valueTreeChildAdded (juce::ValueTree&, juce::ValueTree&) override               { changed = true; }
+        void valueTreeChildRemoved (juce::ValueTree&, juce::ValueTree&, int) override        { changed = true; }
+        void valueTreeChildOrderChanged (juce::ValueTree&, int, int) override                { changed = true; }
+    };
+
+    std::unique_ptr<ChangeWatcher> changes;
+
+    /** True if a backup already holds exactly what's in the project file (as it does when the
+        last session's final save is being opened again). */
+    bool isInBackups() const
+    {
+        auto size = editFile.getSize();
+        juce::String hash;
+
+        for (auto& f : getFolder().getChildFile ("Backups").findChildFiles (juce::File::findFiles, false, "*" + editFile.getFileExtension()))
+        {
+            if (f.getSize() != size)
+                continue;
+
+            if (hash.isEmpty())
+                hash = hashFileContents (editFile);
+
+            if (hashFileContents (f) == hash)
+                return true;
+        }
+
+        return false;
+    }
 
     void makeBackup()
     {
@@ -363,7 +575,8 @@ private:
         auto backups = getFolder().getChildFile ("Backups");
         backups.createDirectory();
         auto stamp = juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H-%M-%S");
-        editFile.copyFileTo (backups.getChildFile (getName() + " " + stamp + editFile.getFileExtension()));
+        editFile.copyFileTo (backups.getNonexistentChildFile (getName() + " " + stamp, editFile.getFileExtension(), false));
+        backedUpModTime = editFile.getLastModificationTime();
 
         // Keep the 30 most recent backups
         auto files = backups.findChildFiles (juce::File::findFiles, false, "*" + editFile.getFileExtension());

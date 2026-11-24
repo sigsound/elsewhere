@@ -2296,15 +2296,84 @@ private:
         });
     }
 
+    /** Opens a project. One whose file can't be read isn't opened (it would show as an empty
+        project, and saving that would replace the real one); one with unsaved changes left by a
+        session that didn't close properly opens as last saved, and asks about them. */
     void loadProject (const juce::File& editFile)
     {
         if (window == nullptr)
             return;
 
+        if (Project::isDamaged (editFile))
+            return projectIsDamaged (editFile);
+
+        loadProjectNow (editFile, false);
+
+        if (auto when = Project::getRecoveryTime (*engine, editFile); when && mainComponent != nullptr && mainComponent->getProject().hasRecoveryPending())
+            askAboutRecovery (editFile, *when);
+    }
+
+    void askAboutRecovery (const juce::File& editFile, juce::Time when)
+    {
+        auto options = juce::MessageBoxOptions()
+                         .withIconType (juce::MessageBoxIconType::QuestionIcon)
+                         .withTitle ("Recover unsaved changes?")
+                         .withMessage ("Elsewhere didn't close properly while \"" + editFile.getFileNameWithoutExtension() + "\" had unsaved changes, last kept at "
+                                       + when.toString (true, true, false) + ". The project was last saved at "
+                                       + editFile.getLastModificationTime().toString (true, true, false) + ".\n\n"
+                                       "Recover opens those changes; nothing is saved over until you save. Open Last Saved keeps them "
+                                       "in Version History instead.")
+                         .withButton ("Recover")
+                         .withButton ("Open Last Saved");
+
+        juce::AlertWindow::showAsync (options, [this, editFile] (int result)
+        {
+            // Still the project the question was about?
+            if (mainComponent == nullptr || mainComponent->getProject().getEditFile() != editFile
+                 || ! mainComponent->getProject().hasRecoveryPending())
+                return;
+
+            if (result == 1)
+                loadProjectNow (editFile, true);
+            else
+                mainComponent->getProject().setRecoveryAside();
+        });
+    }
+
+    void projectIsDamaged (const juce::File& editFile)
+    {
+        // Something has to be open: at launch, that's a new project
+        if (mainComponent == nullptr)
+            loadProjectNow (Project::createProjectFolder (Project::getDefaultProjectsFolder(), "Untitled"), false);
+
+        auto options = juce::MessageBoxOptions()
+                         .withIconType (juce::MessageBoxIconType::WarningIcon)
+                         .withTitle ("This project can't be read")
+                         .withMessage ("\"" + editFile.getFileName() + "\" is damaged, or hasn't finished syncing. It hasn't been changed.\n\n"
+                                       "If it's in a synced folder, wait for syncing to finish and open it again. Otherwise, Open Latest Backup "
+                                       "puts the most recent backup in its place and keeps the damaged file in the project's Backups folder.")
+                         .withButton ("Open Latest Backup")
+                         .withButton ("Cancel");
+
+        juce::AlertWindow::showAsync (options, [this, editFile] (int result)
+        {
+            if (result != 1)
+                return;
+
+            if (Project::restoreLatestBackup (editFile))
+                confirmDiscardChanges ([this, editFile] { loadProject (editFile); });
+            else
+                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "No backup to open",
+                    "There's no backup that can be read in " + editFile.getParentDirectory().getChildFile ("Backups").getFullPathName() + ".");
+        });
+    }
+
+    void loadProjectNow (const juce::File& editFile, bool recover)
+    {
         window->clearContentComponent();
         mainComponent = nullptr;
 
-        auto* mc = new MainComponent (*engine, editFile, *this);
+        auto* mc = new MainComponent (*engine, editFile, *this, recover);
         mainComponent = mc;
         mc->setSize (1400, 860);
         mc->onTitleChanged = [this] { updateTitle(); };

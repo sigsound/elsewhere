@@ -659,6 +659,85 @@ int run (const juce::StringArray& args)
         log.check (rig.project->save (false) && ! rig.project->hasChangedSinceSaved(), "saving again once the folder is writable works");
     }
 
+    // Unsaved changes outlive a crash, and a damaged file is never opened as an empty project
+    {
+        log.title ("Recovery");
+        Rig rig (outDir, "recover", 48000.0, 256, 1);
+        auto file = rig.project->getEditFile();
+        auto recovery = Project::getRecoveryFile (rig.engine, file);
+        auto kept = recovery.getSiblingFile ("kept");
+        auto backups = rig.project->getFolder().getChildFile ("Backups");
+        auto trackName = [&] { return te::getAudioTracks (rig.edit())[0]->getName(); };
+        auto change = [&] (const juce::String& name)
+        {
+            te::getAudioTracks (rig.edit())[0]->setName (name);
+            rig.edit().markAsChanged();
+        };
+        auto reopen = [&] (bool recover)
+        {
+            rig.project.reset();
+            rig.project = std::make_unique<Project> (rig.engine, file, recover);
+        };
+        auto crash = [&]    // the session ends without closing: its recovery copy is left behind
+        {
+            recovery.copyFileTo (kept);
+            rig.project.reset();
+            kept.moveFileTo (recovery);
+            rig.project = std::make_unique<Project> (rig.engine, file);
+        };
+
+        recovery.deleteFile();
+        rig.project->save (false);
+        log.check (! rig.project->updateRecovery() && ! recovery.exists(), "nothing is kept while nothing has changed");
+
+        change ("Not saved yet");
+        log.check (rig.project->updateRecovery() && Project::isReadable (recovery), "unsaved changes are kept");
+        log.check (! rig.project->updateRecovery(), "and not written again until something else changes");
+
+        reopen (false);
+        log.check (! recovery.exists() && ! rig.project->hasRecoveryPending(), "closing properly leaves nothing to recover");
+
+        change ("Not saved yet");
+        rig.project->updateRecovery();
+        crash();
+        log.check (rig.project->hasRecoveryPending() && Project::getRecoveryTime (rig.engine, file).has_value() && trackName() == "In1",
+                   "after a crash the project opens as last saved, with the changes waiting");
+
+        change ("Something else");
+        log.check (! rig.project->updateRecovery(), "they aren't written over before the question is answered");
+        reopen (false);
+        log.check (rig.project->hasRecoveryPending(), "or lost by closing without answering");
+
+        reopen (true);
+        log.check (trackName() == "Not saved yet" && rig.project->hasChangedSinceSaved(), "Recover opens them, as changes still to save");
+        log.check (rig.project->save (false) && ! recovery.exists(), "saving them leaves nothing to recover");
+
+        change ("Set aside");
+        rig.project->updateRecovery();
+        crash();
+        rig.project->setRecoveryAside();
+        log.check (! recovery.exists() && ! rig.project->hasRecoveryPending()
+                    && backups.findChildFiles (juce::File::findFiles, false, "* unsaved.elsewhere").size() == 1,
+                   "Open Last Saved puts them in Backups for Version History");
+
+        // A project file cut short, as a half-finished sync leaves it
+        rig.project.reset();
+        file.replaceWithText (file.loadFileAsString().substring (0, 300));
+        auto size = file.getSize();
+        log.check (Project::isDamaged (file), "a file cut short is seen as damaged");
+
+        {
+            Project p (rig.engine, file);
+            log.check (p.isUnreadable() && ! p.save (false) && file.getSize() == size, "and can't be saved over, even if it's opened");
+        }
+
+        auto used = Project::restoreLatestBackup (file);
+        log.check (used.has_value() && Project::isReadable (file) && ! Project::isDamaged (file), "the latest backup opens in its place");
+        log.check (backups.findChildFiles (juce::File::findFiles, false, "*.damaged").size() == 1, "and the damaged file is kept");
+        rig.project = std::make_unique<Project> (rig.engine, file);
+        log.check (trackName() == "Not saved yet", "with what was last saved (" + trackName() + ")");
+    }
+
     log.text << "\n" << (log.failures == 0 ? "ALL RECORD TESTS PASSED" : juce::String (log.failures) + " failed") << "\n";
     outDir.getChildFile ("record-test.txt").replaceWithText (log.text);
     std::cout << log.text;

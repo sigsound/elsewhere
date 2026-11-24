@@ -104,7 +104,8 @@ class MainComponent : public juce::Component,
                       private juce::Timer
 {
 public:
-    MainComponent (te::Engine& e, const juce::File& editFile, AppActions& actions);
+    /** With recover, opens the unsaved changes kept from a session that didn't close properly. */
+    MainComponent (te::Engine& e, const juce::File& editFile, AppActions& actions, bool recover = false);
     ~MainComponent() override;
 
     Project& getProject()           { return *project; }
