@@ -22,6 +22,8 @@ or newer as a universal binary (Intel + Apple Silicon), and on 64-bit Windows wi
 and links with it over Wi-Fi. It's [sold separately](https://somewhere.audio/); the protocol it speaks is documented in
 `src/SomewhereLink.h`.
 
+**Community:** share what you make, get help and suggest features on [Discord](https://discord.gg/B6ZrShSqSd).
+
 ## A look around
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/screenshots/arrangement-dark.webp"><img src="docs/images/screenshots/arrangement-light.webp" alt="The arrangement: a vocal, a guitar group, keys, bass and a drum track in sections, with comments on the clips and a collaborator in the project"></picture>
