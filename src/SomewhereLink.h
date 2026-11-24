@@ -508,8 +508,20 @@ private:
         void send (const juce::MemoryBlock& frame)
         {
             const juce::ScopedLock sl (writeLock);
-            if (socket->isConnected())
-                socket->write (frame.getData(), (int) frame.getSize());
+
+            if (! socket->isConnected())
+                return;
+
+            // A phone that's asleep or out of range stops reading, and once the buffers fill a
+            // write waits for it: that's the whole app waiting, since this is the message thread.
+            // If it can't take a write now, drop the connection; the phone connects again
+            if (socket->waitUntilReady (false, 50) != 1)
+            {
+                socket->close();
+                return;
+            }
+
+            socket->write (frame.getData(), (int) frame.getSize());
         }
 
         void run() override

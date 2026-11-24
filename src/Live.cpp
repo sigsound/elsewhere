@@ -432,6 +432,7 @@ private:
                     continue;
 
                 st.primed = true;
+                st.resuming = true;
             }
 
             // Too much queued (e.g. after a network hiccup): skip ahead to keep latency low
@@ -446,11 +447,40 @@ private:
             int s1, n1, s2, n2;
             st.fifo.prepareToRead (toRead, s1, n1, s2, n2);
 
-            for (int ch = 0; ch < numChannels; ++ch)
+            // Running dry fades out and starting again fades in (about 1.5 ms), so a network
+            // hiccup is a dip, not a click
+            const bool runningDry = toRead < n;
+            const int fade = juce::jmin (64, toRead);
+
+            auto add = [&] (int from, int count, float g0, float g1)     // a stretch of what's being read
             {
-                buffer.addFrom (ch, start, st.buffer, ch, s1, n1, gain);
-                if (n2 > 0) buffer.addFrom (ch, start + n1, st.buffer, ch, s2, n2, gain);
+                for (int ch = 0; ch < numChannels && count > 0; ++ch)
+                {
+                    const int first = juce::jlimit (0, count, n1 - from);     // how much of it is before the wrap
+
+                    if (first > 0)
+                        buffer.addFromWithRamp (ch, start + from, st.buffer.getReadPointer (ch, s1 + from), first,
+                                                g0, g0 + (g1 - g0) * (float) first / (float) count);
+
+                    if (count > first)
+                        buffer.addFromWithRamp (ch, start + from + first, st.buffer.getReadPointer (ch, s2 + from + first - n1), count - first,
+                                                g0 + (g1 - g0) * (float) first / (float) count, g1);
+                }
+            };
+
+            if (st.resuming || runningDry)
+            {
+                const int in = st.resuming ? fade : 0, out = runningDry ? juce::jmin (fade, toRead - in) : 0;
+                add (0, in, 0.0f, gain);
+                add (in, toRead - in - out, gain, gain);
+                add (toRead - out, out, gain, 0.0f);
             }
+            else
+            {
+                add (0, toRead, gain, gain);
+            }
+
+            st.resuming = false;
 
             if (recordingThisBlock && (int) i < maxLanes)
                 for (int ch = 0; ch < 2; ++ch)
@@ -463,7 +493,7 @@ private:
             peerLevels[i] = juce::jmax (peerLevels[i].load(), peak);
             st.fifo.finishedRead (n1 + n2);
 
-            if (toRead < n)
+            if (runningDry)
             {
                 ++st.underruns;      // ran dry: wait to refill before playing again
                 st.primed = false;
@@ -1360,7 +1390,10 @@ struct Session::Impl : private juce::Timer
         // People who left
         for (auto it = peers.begin(); it != peers.end();)
         {
-            if (! seen.count (it->first))
+            // Presence comes through the synced folder, which can lag by minutes (and the two
+            // computers' clocks can disagree): a connection that's up doesn't depend on it.
+            // When they really leave, the connection closes, and then this applies
+            if (! seen.count (it->first) && ! it->second->connected)
             {
                 closePeer (*it->second);
                 it = peers.erase (it);
