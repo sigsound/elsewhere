@@ -246,6 +246,48 @@ int run (te::Engine& engine, const juce::File& outDir)
     Routing::setOutput (pad, nullptr);
     log.check (getOutputName (pad) == "Main" && ! Routing::getFeeders (*bus).contains (&pad), "and back to Main");
 
+    // Moving tracks into and out of a group (dragging headers, or Move to Group)
+    {
+        const auto retBus = Mixing::getReturnBus (*ret);
+        auto hasSend = [retBus] (te::Track& t) { return Mixing::findSend (t, retBus) != nullptr; };
+        using Mixing::TrackDrop;
+
+        um.beginNewTransaction();
+        auto group = Mixing::groupTracks (edit, { &kick });
+        log.check (group != nullptr && kick.getParentTrack() == group && hasSend (bass), "a group with the kick in it; the bass sends on its own");
+
+        log.check (! Mixing::canMoveTracks (edit, { group }, kick, TrackDrop::after), "a group can't go inside itself");
+        log.check (! Mixing::canMoveTracks (edit, { &bass }, *ret, TrackDrop::after) && Mixing::canMoveTracks (edit, { &bass }, *ret, TrackDrop::before),
+                   "tracks can go just before the returns but not among them");
+        log.check (! Mixing::canMoveTracks (edit, { &bass }, pad, TrackDrop::into), "only groups take tracks into them");
+
+        um.beginNewTransaction();
+        Mixing::moveTracks (edit, { &bass }, *group, TrackDrop::into);
+        auto inGroup = group->getAllSubTracks (false);
+        log.check (bass.getParentTrack() == group && inGroup.indexOf (&bass) == 1 && ! hasSend (bass),
+                   "dropped on the group, the bass goes in after the kick and sends through the group");
+
+        um.beginNewTransaction();
+        Mixing::moveTracks (edit, { &bass }, *group, TrackDrop::after);
+        auto top = te::getTopLevelTracks (edit);
+        log.check (bass.getParentTrack() == nullptr && top.indexOf (&bass) == top.indexOf (group) + 1 && hasSend (bass),
+                   "dropped after the group, it comes out with its own send again");
+
+        um.beginNewTransaction();
+        Mixing::moveTracks (edit, { &pad, &bass }, kick, TrackDrop::before);
+        inGroup = group->getAllSubTracks (false);
+        log.check (inGroup.size() == 3 && inGroup[0] == &bass && inGroup[1] == &pad && inGroup[2] == &kick && ! hasSend (pad),
+                   "two at once, dropped before the kick, keep their order and join the group");
+
+        // Undoing a move between groups makes new track objects, so find them again
+        const auto bassID = bass.itemID, padID = pad.itemID;
+        um.undo();
+        auto bassNow = te::findTrackForID (edit, bassID), padNow = te::findTrackForID (edit, padID);
+        log.check (bassNow != nullptr && padNow != nullptr && bassNow->getParentTrack() == nullptr && padNow->getParentTrack() == nullptr
+                     && hasSend (*bassNow) && hasSend (*padNow),
+                   "undo takes them back out, sends and all");
+    }
+
     std::cout << "Routing tests\n" << log.text << (log.failures == 0 ? "All passed\n" : juce::String (log.failures) + " failed\n");
     return log.failures;
 }

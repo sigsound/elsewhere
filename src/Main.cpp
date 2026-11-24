@@ -2320,7 +2320,9 @@ private:
         if (window != nullptr && mainComponent != nullptr)
         {
             auto& p = mainComponent->getProject();
-            window->setName (p.getName() + (p.hasChangedSinceSaved() ? " *" : "") + "  -  Elsewhere");
+            // Just the project: the menu bar and the wordmark already say it's Elsewhere
+            auto name = p.getName().isNotEmpty() ? p.getName() : juce::String ("Elsewhere");
+            window->setName (name + (p.hasChangedSinceSaved() ? " *" : ""));
         }
     }
 

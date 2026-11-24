@@ -10,7 +10,8 @@ namespace elsewhere
 //==============================================================================
 /**
     Every track in the project, in order, for big sessions: click the dot to show or hide a track
-    (in the Arrangement and the Mixer), click a name to select it, drag names to reorder.
+    (in the Arrangement and the Mixer), click a name to select it, drag names to reorder (or onto a group's name to move them into
+    the group).
 */
 class TrackList : public juce::Component,
                   private juce::ValueTree::Listener,
@@ -78,6 +79,13 @@ public:
 private:
     static constexpr int headerH = 26, rowH = 22, eyeW = 22;
 
+    /** Where dragged names would land. */
+    struct Drop
+    {
+        te::Track* target = nullptr;
+        Mixing::TrackDrop where = Mixing::TrackDrop::before;
+    };
+
     //==============================================================================
     struct Rows : public juce::Component
     {
@@ -88,10 +96,21 @@ private:
             for (int i = 0; i < (int) owner.tracks.size(); ++i)
                 owner.paintRow (g, *owner.tracks[(size_t) i], getRowArea (i));
 
-            if (dropIndex >= 0)
+            if (auto i = drop.has_value() ? owner.indexOf (drop->target) : -1; i >= 0)
             {
                 g.setColour (Colours::accent);
-                g.fillRect (eyeW, dropIndex * rowH - 1, getWidth() - eyeW, 2);
+
+                if (drop->where == Mixing::TrackDrop::into)
+                {
+                    g.drawRect (getRowArea (i).withTrimmedLeft (eyeW), 2);
+                }
+                else
+                {
+                    // At the depth it lands at, so going into a group or out of one shows
+                    auto x = eyeW + juce::jmax (0, drop->target->getTrackDepth()) * 10;
+                    auto y = (drop->where == Mixing::TrackDrop::before ? i : i + 1) * rowH;
+                    g.fillRect (x, y - 1, getWidth() - x, 2);
+                }
             }
         }
 
@@ -101,7 +120,8 @@ private:
         void mouseDown (const juce::MouseEvent& e) override
         {
             pressed = getRowAt (e.y);
-            dropIndex = -1;
+            drop.reset();
+            selectOnlyOnMouseUp = false;
 
             if (! juce::isPositiveAndBelow (pressed, (int) owner.tracks.size()))
                 return;
@@ -125,8 +145,12 @@ private:
 
             auto& sm = owner.viewState.selectionManager;
 
+            // A plain click on one of several selected tracks waits for the mouse up, so the
+            // whole selection can be dragged
             if (e.mods.isCommandDown() || e.mods.isShiftDown())
                 sm.select (t.get(), true);
+            else if (! e.mods.isPopupMenu() && sm.isSelected (t.get()) && sm.getItemsOfType<te::Track>().size() > 1)
+                selectOnlyOnMouseUp = true;
             else if (! (e.mods.isPopupMenu() && sm.isSelected (t.get())))
                 sm.selectOnly (t.get());
 
@@ -141,20 +165,30 @@ private:
 
         void mouseDrag (const juce::MouseEvent& e) override
         {
-            if (pressed < 0 || e.getDistanceFromDragStartY() == 0 || std::abs (e.getDistanceFromDragStartY()) < 4)
+            if (pressed < 0 || std::abs (e.getDistanceFromDragStartY()) < 4)
                 return;
 
-            auto index = juce::jlimit (0, (int) owner.tracks.size(), (e.y + rowH / 2) / rowH);
-            dropIndex = owner.canMove (pressed, index) ? index : -1;
+            selectOnlyOnMouseUp = false;
+            drop = owner.dropAt (e.y, owner.draggedTracks (pressed));
             repaint();
+
+            if (auto vp = findParentComponentOfClass<juce::Viewport>())
+            {
+                auto p = vp->getLocalPoint (this, e.getPosition());
+                vp->autoScroll (p.x, p.y, 20, 8);
+            }
         }
 
         void mouseUp (const juce::MouseEvent&) override
         {
-            if (pressed >= 0 && dropIndex >= 0)
-                owner.move (pressed, dropIndex);
+            if (pressed >= 0 && drop.has_value())
+                owner.move (owner.draggedTracks (pressed), *drop);
+            else if (selectOnlyOnMouseUp && juce::isPositiveAndBelow (pressed, (int) owner.tracks.size()))
+                owner.viewState.selectionManager.selectOnly (owner.tracks[(size_t) pressed].get());
 
-            pressed = dropIndex = -1;
+            pressed = -1;
+            selectOnlyOnMouseUp = false;
+            drop.reset();
             repaint();
         }
 
@@ -167,7 +201,9 @@ private:
         }
 
         TrackList& owner;
-        int pressed = -1, dropIndex = -1;
+        int pressed = -1;
+        bool selectOnlyOnMouseUp = false;
+        std::optional<Drop> drop;
     };
 
     EditViewState& viewState;
@@ -235,32 +271,64 @@ private:
         g.drawHorizontalLine (r.getBottom() - 1, 0.0f, (float) rows.getWidth());
     }
 
-    /** Can the track at `from` move to just before row `to` (or the end)? Not into itself. */
-    bool canMove (int from, int to) const
+    int indexOf (const te::Track* t) const
     {
-        if (to == from || to == from + 1)
-            return false;
+        for (size_t i = 0; i < tracks.size(); ++i)
+            if (tracks[i].get() == t)
+                return (int) i;
 
-        auto moving = tracks[(size_t) from].get();
-        auto target = to < (int) tracks.size() ? tracks[(size_t) to].get() : tracks.back().get();
-
-        for (auto t = target; t != nullptr; t = t->getParentTrack())
-            if (t == moving)
-                return false;
-
-        return true;
+        return -1;
     }
 
-    void move (int from, int to)
+    /** What dragging the name in `row` moves: the selection if it's in it, or just that track. */
+    juce::Array<te::Track*> draggedTracks (int row)
     {
-        auto moving = tracks[(size_t) from];
-        auto& edit = viewState.edit;
-        edit.getUndoManager().beginNewTransaction ("Move " + moving->getName());
+        if (! juce::isPositiveAndBelow (row, (int) tracks.size()))
+            return {};
 
-        if (to < (int) tracks.size())
-            edit.moveTrack (moving, te::TrackInsertPoint (*tracks[(size_t) to], true));
-        else
-            edit.moveTrack (moving, te::TrackInsertPoint (*tracks.back(), false));
+        return TrackDrag::tracksFor (viewState, *tracks[(size_t) row]);
+    }
+
+    /** Where a drag at `y` lands: into a group when over the middle of its name, otherwise
+        between two names, alongside the track below the line (in its group, if it has one). */
+    std::optional<Drop> dropAt (int y, const juce::Array<te::Track*>& moving) const
+    {
+        const int num = (int) tracks.size();
+
+        if (num == 0 || moving.isEmpty())
+            return std::nullopt;
+
+        auto canDrop = [&] (Drop d) -> std::optional<Drop>
+        {
+            if (Mixing::canMoveTracks (viewState.edit, moving, *d.target, d.where))
+                return d;
+
+            return std::nullopt;
+        };
+
+        if (auto row = y / rowH; y >= 0 && row < num && tracks[(size_t) row]->isFolderTrack())
+        {
+            auto within = y - row * rowH;
+
+            if (within > rowH / 4 && within < rowH - rowH / 4)
+                return canDrop ({ tracks[(size_t) row].get(), Mixing::TrackDrop::into });
+        }
+
+        auto index = juce::jlimit (0, num, (y + rowH / 2) / rowH);
+
+        if (index < num)
+            return canDrop ({ tracks[(size_t) index].get(), Mixing::TrackDrop::before });
+
+        return canDrop ({ tracks.back().get(), Mixing::TrackDrop::after });
+    }
+
+    void move (const juce::Array<te::Track*>& moving, Drop d)
+    {
+        auto& edit = viewState.edit;
+        edit.getUndoManager().beginNewTransaction (d.where == Mixing::TrackDrop::into ? "Move to group"
+                                                   : moving.size() == 1 ? "Move " + moving.getFirst()->getName()
+                                                                        : juce::String ("Move tracks"));
+        Mixing::moveTracks (edit, moving, *d.target, d.where);
     }
 
     static void renameTrack (te::Track& t)

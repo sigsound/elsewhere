@@ -112,7 +112,7 @@ Dev flags:
 - **Import stems**: File → Import Audio/Stems (⌘I), or drop several files at once. Each file becomes its own track, lined up at bar 1, and is copied into the project. Stems play exactly as exported, with no warping.
 - **Mixing**:
   - Return tracks (⌥⌘T) with post-fader sends on every track.
-  - Group tracks (⌘G) as sub-mixes you can collapse. A group has one colour, chosen on the group, and its tracks show tones of it. A collapsed group shows everything it plays as one combined waveform, and is one strip in the Mixer.
+  - Group tracks (⌘G) as sub-mixes you can collapse. Drag a track's header onto a group to add it, or between tracks to reorder. A group has one colour, chosen on the group, and its tracks show tones of it. A collapsed group shows everything it plays as one combined waveform, and is one strip in the Mixer.
   - Automation lanes (press **A**) for volume, pan, sends or any plug-in parameter. The **AUTO** button records knob and fader moves while playing.
 - **Browser preview**: click an audio file to hear it.
 - **Crash-safe plug-in scanning**: each plug-in is scanned in a separate helper process, so a bad plug-in can't crash Elsewhere.

@@ -296,6 +296,42 @@ inline void showTrackMenu (te::Track& track, EditViewState& evs, std::function<v
             evs.focusTrack (g);
     });
 
+    // Into a group that's already there (dragging a track onto a group's header does the same)
+    {
+        juce::PopupMenu groups;
+        auto moving = Mixing::movableTracks (edit, selectedTracks);
+
+        for (auto t : te::getAllTracks (edit))
+        {
+            auto g = dynamic_cast<te::FolderTrack*> (t);
+
+            if (g == nullptr || ! Mixing::canMoveTracks (edit, moving, *g, Mixing::TrackDrop::into))
+                continue;
+
+            bool allInIt = true;
+            for (auto mt : moving)
+                allInIt = allInIt && mt->getParentTrack() == g;
+
+            if (! allInIt)
+                groups.addItem (g->getName(), [moving, gRef = te::Track::Ptr (g), &edit]
+                {
+                    edit.getUndoManager().beginNewTransaction ("Move to group");
+                    Mixing::moveTracks (edit, moving, *gRef, Mixing::TrackDrop::into);
+                });
+        }
+
+        if (groups.getNumItems() > 0)
+            m.addSubMenu ("Move to Group", groups);
+    }
+
+    // Out of its group, to just after it
+    if (auto parent = track.getParentTrack(); parent != nullptr && parent->isFolderTrack())
+        m.addItem ("Remove from Group", [selectedTracks, parentRef = te::Track::Ptr (parent), &edit]
+        {
+            edit.getUndoManager().beginNewTransaction ("Remove from group");
+            Mixing::moveTracks (edit, selectedTracks, *parentRef, Mixing::TrackDrop::after);
+        });
+
     if (auto ft = dynamic_cast<te::FolderTrack*> (&track))
         m.addItem ("Ungroup", [ft, &edit, &evs]
         {
@@ -374,6 +410,53 @@ namespace TrackSpeech
 }
 
 //==============================================================================
+/** Dragging track headers to reorder tracks or move them into a group. */
+namespace TrackDrag
+{
+    inline const juce::String prefix { "elsewhere-tracks:" };
+
+    /** What a drag from `t` moves: every selected track if `t` is one of them, otherwise just `t`. */
+    inline juce::Array<te::Track*> tracksFor (EditViewState& evs, te::Track& t)
+    {
+        juce::Array<te::Track*> list;
+
+        if (evs.selectionManager.isSelected (&t))
+            list = evs.selectionManager.getItemsOfType<te::Track>();
+
+        if (list.isEmpty())
+            list.add (&t);
+
+        return Mixing::movableTracks (t.edit, list);
+    }
+
+    inline juce::var describe (const juce::Array<te::Track*>& tracks)
+    {
+        juce::StringArray ids;
+        for (auto t : tracks)
+            ids.add (t->itemID.toString());
+
+        return prefix + ids.joinIntoString (",");
+    }
+
+    inline bool isTrackDrag (const juce::var& description)
+    {
+        return description.isString() && description.toString().startsWith (prefix);
+    }
+
+    inline juce::Array<te::Track*> tracksIn (te::Edit& edit, const juce::var& description)
+    {
+        juce::Array<te::Track*> list;
+
+        if (isTrackDrag (description))
+            for (auto& id : juce::StringArray::fromTokens (description.toString().fromFirstOccurrenceOf (prefix, false, false), ",", {}))
+                if (auto t = te::findTrackForID (edit, te::EditItemID::fromString (id)))
+                    list.add (t);
+
+        return list;
+    }
+}
+
+//==============================================================================
 /** A small send knob: the return's letter, blue when post-fader, yellow when pre-fader.
     Right-click to switch between pre- and post-fader. */
 class SendKnob : public juce::Component
@@ -436,6 +519,7 @@ private:
 
 //==============================================================================
 class TrackHeader : public juce::Component,
+                    public juce::DragAndDropTarget,
                     private juce::ChangeListener,
                     private juce::ValueTree::Listener,
                     private juce::Timer
@@ -651,6 +735,65 @@ public:
             g.setFont (juce::FontOptions (9.0f, juce::Font::bold));
             g.drawText (c.name.substring (0, 1).toUpperCase(), dot.toNearestInt(), juce::Justification::centred);
         }
+
+        // Where dragged tracks would land: a line above or below, or the group outlined to go into it
+        if (dropPlace.has_value())
+        {
+            auto area = getLocalBounds().toFloat().withTrimmedLeft ((float) getIndent()).reduced (4.0f, 1.0f);
+            g.setColour (Colours::accent);
+
+            if (*dropPlace == Mixing::TrackDrop::into)
+                g.drawRoundedRectangle (area.reduced (1.0f), 10.0f, 2.0f);
+            else
+                g.fillRoundedRectangle (area.withHeight (3.0f).withY (*dropPlace == Mixing::TrackDrop::before ? 0.0f : (float) getHeight() - 3.0f), 1.5f);
+        }
+    }
+
+    //==============================================================================
+    // Dragging headers: onto another track to move next to it, onto a group to move into it
+    bool isInterestedInDragSource (const SourceDetails& d) override
+    {
+        return TrackDrag::isTrackDrag (d.description);
+    }
+
+    void itemDragEnter (const SourceDetails& d) override    { itemDragMove (d); }
+
+    void itemDragMove (const SourceDetails& d) override
+    {
+        setDropPlace (dropPlaceFor (d));
+
+        if (auto vp = findParentComponentOfClass<juce::Viewport>())
+        {
+            auto p = vp->getLocalPoint (this, d.localPosition);
+            vp->autoScroll (p.x, p.y, 30, 12);
+        }
+    }
+
+    void itemDragExit (const SourceDetails&) override       { setDropPlace (std::nullopt); }
+
+    void itemDropped (const SourceDetails& d) override
+    {
+        auto where = dropPlaceFor (d);
+        setDropPlace (std::nullopt);
+
+        if (! where.has_value())
+            return;
+
+        // After this returns: moving tracks rebuilds the rows, this header included
+        juce::Array<te::Track::Ptr> moving;
+        for (auto t : TrackDrag::tracksIn (track->edit, d.description))
+            moving.add (t);
+
+        juce::MessageManager::callAsync ([moving, target = track, w = *where]
+        {
+            juce::Array<te::Track*> list;
+            for (auto& t : moving)
+                list.add (t.get());
+
+            auto& edit = target->edit;
+            edit.getUndoManager().beginNewTransaction (w == Mixing::TrackDrop::into ? "Move to group" : "Move tracks");
+            Mixing::moveTracks (edit, list, *target, w);
+        });
     }
 
     void resized() override
@@ -744,6 +887,7 @@ public:
 
     void mouseDown (const juce::MouseEvent& e) override
     {
+        canDragTracks = selectOnlyOnMouseUp = false;
         beginResizeIfAtEdge (e);
 
         if (resizing)
@@ -755,13 +899,20 @@ public:
             return;
         }
 
-        // Cmd/shift-click builds a multi-selection (e.g. to group tracks)
+        auto& sm = viewState.selectionManager;
+        const bool alreadyInSelection = sm.isSelected (track.get()) && sm.getItemsOfType<te::Track>().size() > 1;
+
+        // Cmd/shift-click builds a multi-selection (e.g. to group tracks). A plain click on one of
+        // several selected tracks waits for the mouse up, so the whole selection can be dragged.
         if (e.mods.isCommandDown() || e.mods.isShiftDown())
-            viewState.selectionManager.select (track.get(), true);
-        else if (! (e.mods.isPopupMenu() && viewState.selectionManager.isSelected (track.get())))
-            viewState.selectionManager.selectOnly (track.get());
+            sm.select (track.get(), true);
+        else if (alreadyInSelection && ! e.mods.isPopupMenu())
+            selectOnlyOnMouseUp = true;
+        else if (! (e.mods.isPopupMenu() && sm.isSelected (track.get())))
+            sm.selectOnly (track.get());
 
         viewState.focusTrack (track.get());
+        canDragTracks = ! e.mods.isPopupMenu() && ! track->isMasterTrack() && ! Mixing::isReturnTrack (*track);
 
         if (e.mods.isPopupMenu() && ! track->isMasterTrack())
             showTrackMenu (*track, viewState, [this] { name.showEditor(); });
@@ -773,13 +924,24 @@ public:
             name.showEditor();
     }
 
-    /** Drag the bottom edge to resize the track height. */
+    /** Drag the bottom edge to resize the track height; drag anywhere else to move the track
+        (onto a group's header to put it in the group). */
     void mouseDrag (const juce::MouseEvent& e) override
     {
         if (resizing)
         {
             viewState.trackHeights[track->itemID] = juce::jmax (EditViewState::minTrackHeight, dragStartHeight + e.getDistanceFromDragStartY());
             viewState.sendChangeMessage();
+            return;
+        }
+
+        if (canDragTracks && e.getDistanceFromDragStart() > 5)
+        {
+            canDragTracks = selectOnlyOnMouseUp = false;
+
+            if (auto container = juce::DragAndDropContainer::findParentDragContainerFor (this))
+                container->startDragging (TrackDrag::describe (TrackDrag::tracksFor (viewState, *track)), this,
+                                          juce::ScaledImage(), false, nullptr, &e.source);
         }
     }
 
@@ -788,7 +950,13 @@ public:
         setMouseCursor (e.y > getHeight() - 5 ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::NormalCursor);
     }
 
-    void mouseUp (const juce::MouseEvent&) override    { resizing = false; }
+    void mouseUp (const juce::MouseEvent&) override
+    {
+        if (selectOnlyOnMouseUp)
+            viewState.selectionManager.selectOnly (track.get());
+
+        resizing = canDragTracks = selectOnlyOnMouseUp = false;
+    }
 
 private:
     EditViewState& viewState;
@@ -849,8 +1017,32 @@ private:
     {
         if (parent == track->state) scheduleSendRebuild();
     }
-    bool resizing = false;
+    bool resizing = false, canDragTracks = false, selectOnlyOnMouseUp = false;
     int dragStartHeight = 0;
+    std::optional<Mixing::TrackDrop> dropPlace;
+
+    /** A group's header takes dragged tracks into the group (except along its top edge, which
+        puts them before it); any other header puts them before or after its track. */
+    std::optional<Mixing::TrackDrop> dropPlaceFor (const SourceDetails& d) const
+    {
+        auto y = d.localPosition.y;
+        auto where = folderTrack != nullptr ? (y < getHeight() / 4 ? Mixing::TrackDrop::before : Mixing::TrackDrop::into)
+                                            : (y < getHeight() / 2 ? Mixing::TrackDrop::before : Mixing::TrackDrop::after);
+
+        if (! Mixing::canMoveTracks (track->edit, TrackDrag::tracksIn (track->edit, d.description), *track, where))
+            return std::nullopt;
+
+        return where;
+    }
+
+    void setDropPlace (std::optional<Mixing::TrackDrop> p)
+    {
+        if (p != dropPlace)
+        {
+            dropPlace = p;
+            repaint();
+        }
+    }
 
     int getIndent() const       { return juce::jmax (0, track->getTrackDepth()) * indentPerLevel; }
 

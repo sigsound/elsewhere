@@ -218,6 +218,111 @@ namespace Mixing
         edit.deleteTrack (&folder);
     }
 
+    //==============================================================================
+    /** Where dragged tracks land: just before or after another track (alongside it, so in its
+        group if it has one), or into a group, after the tracks already in it. */
+    enum class TrackDrop { before, after, into };
+
+    /** The tracks of a drag that can move: tracks and groups, not returns or the master, and not a
+        track whose group is moving too (it goes with its group). In on-screen order. */
+    inline juce::Array<te::Track*> movableTracks (te::Edit& edit, juce::Array<te::Track*> tracks)
+    {
+        const auto all = tracks;
+
+        tracks.removeIf ([&all] (te::Track* t)
+        {
+            if (t == nullptr || t->isMasterTrack() || isReturnTrack (*t) || ! (t->isAudioTrack() || t->isFolderTrack()))
+                return true;
+
+            for (auto p = t->getParentTrack(); p != nullptr; p = p->getParentTrack())
+                if (all.contains (p))
+                    return true;
+
+            return false;
+        });
+
+        auto order = te::getAllTracks (edit);
+        std::sort (tracks.begin(), tracks.end(), [&order] (auto* a, auto* b) { return order.indexOf (a) < order.indexOf (b); });
+        return tracks;
+    }
+
+    /** Can these tracks go there? Not onto or into themselves, and not among the returns (just
+        before the first return is fine: that's the end of the other tracks). */
+    inline bool canMoveTracks (te::Edit& edit, const juce::Array<te::Track*>& tracks, te::Track& target, TrackDrop where)
+    {
+        auto moving = movableTracks (edit, tracks);
+
+        if (moving.isEmpty() || target.isMasterTrack() || ! (target.isAudioTrack() || target.isFolderTrack()))
+            return false;
+
+        if (isReturnTrack (target))
+        {
+            auto top = te::getTopLevelTracks (edit);
+            auto before = top[top.indexOf (&target) - 1];
+
+            if (where != TrackDrop::before || (before != nullptr && isReturnTrack (*before)))
+                return false;
+        }
+
+        if (where == TrackDrop::into && ! target.isFolderTrack())
+            return false;
+
+        for (auto t = &target; t != nullptr; t = t->getParentTrack())
+            if (moving.contains (t))
+                return false;
+
+        return true;
+    }
+
+    /** Moves tracks (keeping their order) and keeps their sends right: a track that joins a group
+        sends through the group, and one that leaves a group gets its own sends back. */
+    inline void moveTracks (te::Edit& edit, const juce::Array<te::Track*>& tracks, te::Track& target, TrackDrop where)
+    {
+        if (! canMoveTracks (edit, tracks, target, where))
+            return;
+
+        auto moving = movableTracks (edit, tracks);
+
+        // A track leaving one list of tracks for another lives on only while something holds it
+        juce::ReferenceCountedArray<te::Track> keep;
+        for (auto t : moving)
+            keep.add (t);
+
+        auto parent = where == TrackDrop::into ? &target : target.getParentTrack();
+        auto siblings = parent != nullptr ? parent->getAllSubTracks (false) : te::getTopLevelTracks (edit);
+
+        // The track they go after, skipping any that are themselves moving
+        int from = where == TrackDrop::into ? siblings.size() - 1
+                 : siblings.indexOf (&target) - (where == TrackDrop::before ? 1 : 0);
+        te::Track* preceding = nullptr;
+
+        for (int i = from; i >= 0; --i)
+            if (! moving.contains (siblings[i]))
+            {
+                preceding = siblings[i];
+                break;
+            }
+
+        for (auto t : moving)
+        {
+            const bool wasGrouped = t->isPartOfSubmix();
+            edit.moveTrack (t, te::TrackInsertPoint (parent, preceding));
+            preceding = t;
+
+            if (t->isPartOfSubmix())
+            {
+                if (! wasGrouped)
+                    for (auto p : t->pluginList.getPlugins())
+                        if (dynamic_cast<te::AuxSendPlugin*> (p) != nullptr)
+                            p->deleteFromParent();
+            }
+            else
+            {
+                ensureSends (*t);
+            }
+        }
+    }
+
     /** A click on a track's solo button. Solos add up, so soloing a
         guitar and then its return plays both. Cmd-click solos just this track (or, when it's
         already the only one, un-solos it). */

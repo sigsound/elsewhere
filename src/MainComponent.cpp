@@ -1247,7 +1247,7 @@ void MainComponent::timerCallback()
         if (changed)
             viewState->sendChangeMessage();
 
-        transportBar->setStatusText ("Shared: " + project->getName());
+        transportBar->setStatusText ("Shared");
 
         // Shared projects save themselves regularly (the op logs already hold every change)
         if (autosaveCounter % 60 == 0 && project->hasChangedSinceSaved())
@@ -1255,9 +1255,9 @@ void MainComponent::timerCallback()
     }
     else
     {
+        // The project's name is the window's title, so the status only says what needs saying
         auto foreign = project->getForeignLock();
-        transportBar->setStatusText (foreign ? "Also open by " + foreign->user + " (" + foreign->machine + ")"
-                                             : project->getName() + (project->hasChangedSinceSaved() ? " *" : ""));
+        transportBar->setStatusText (foreign ? "Also open by " + foreign->user + " (" + foreign->machine + ")" : juce::String());
     }
 
     auto phones = somewhereLink->getConnectedNames();
@@ -1271,9 +1271,6 @@ void MainComponent::timerCallback()
             A11y::announce ("Somewhere disconnected: " + p);
 
     lastPhones = phones;
-
-    if (! phones.isEmpty())
-        transportBar->setStatusText (transportBar->getStatusText() + "   Somewhere: " + phones.joinIntoString (", "));
 
     if (onTitleChanged)
         onTitleChanged();

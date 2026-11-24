@@ -176,6 +176,10 @@ public:
         setPopupDisplayEnabled (true, true, nullptr);
         startTimerHz (20);   // MIDI-map / modulation-map highlighting, modulation display
 
+        // Changing a value takes a drag (or the keyboard). The wheel passes through to whatever
+        // scrolls underneath, so moving around a project never nudges a fader or knob.
+        setScrollWheelEnabled (false);
+
         // Reachable with Tab and adjustable with the arrow keys, but a click doesn't take the
         // keyboard away from the shortcuts
         setTitle (p.getParameterName());
