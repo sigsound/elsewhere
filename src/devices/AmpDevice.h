@@ -107,6 +107,8 @@ public:
 
     void initialise (const te::PluginInitialisationInfo& info) override
     {
+        // (The engine can do this while audio is still running through the device)
+        const juce::SpinLock::ScopedLockType dspGuard (dspLock);
         rate = info.sampleRate;
         rebuildIrIfNeeded (true);
         maxBlock = juce::jmax (64, info.blockSizeSamples);
@@ -120,10 +122,15 @@ public:
         lastHash = 0;
     }
 
-    void deinitialise() override    { oversampler.reset(); }
+    void deinitialise() override    { const juce::SpinLock::ScopedLockType dspGuard (dspLock); oversampler.reset(); }
 
     void applyToBuffer (const te::PluginRenderContext& fc) override
     {
+        const juce::SpinLock::ScopedTryLockType dspGuard (dspLock);
+
+        if (! dspGuard.isLocked())
+            return;     // being set up again for a new rate or buffer size
+
         if (fc.destBuffer == nullptr || oversampler == nullptr)
             return;
 

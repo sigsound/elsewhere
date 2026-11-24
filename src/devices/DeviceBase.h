@@ -42,6 +42,11 @@ public:
     BusLayout getBusses() const override                   { return BusLayout::singleStereoInOut(); }
     void deinitialise() override                           {}
 
+    /** Held while a device's sound-making state is rebuilt (initialise) and tried, never waited
+        for, by the audio thread: the engine can set a device up again for a new sample rate or
+        buffer size while audio is still running through it. */
+    juce::SpinLock dspLock;
+
     void restorePluginStateFromValueTree (const juce::ValueTree& v) override
     {
         for (auto& p : params)

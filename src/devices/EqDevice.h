@@ -70,6 +70,8 @@ public:
 
     void initialise (const te::PluginInitialisationInfo& info) override
     {
+        // (The engine can do this while audio is still running through the device)
+        const juce::SpinLock::ScopedLockType dspGuard (dspLock);
         rate = info.sampleRate;
         for (auto& stages : filters) for (auto& f : stages) f.reset();
         cachedHash = 0;
@@ -77,6 +79,11 @@ public:
 
     void applyToBuffer (const te::PluginRenderContext& fc) override
     {
+        const juce::SpinLock::ScopedTryLockType dspGuard (dspLock);
+
+        if (! dspGuard.isLocked())
+            return;     // being set up again for a new rate or buffer size
+
         if (fc.destBuffer == nullptr)
             return;
 

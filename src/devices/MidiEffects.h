@@ -34,6 +34,8 @@ public:
 
     void initialise (const te::PluginInitialisationInfo& info) override
     {
+        // (The engine can do this while audio is still running through the device)
+        const juce::SpinLock::ScopedLockType dspGuard (dspLock);
         rate = info.sampleRate;
         tempoPosition = std::make_unique<te::tempo::Sequence::Position> (te::createPosition (edit.tempoSequence));
         out.reserve (512);
@@ -44,10 +46,15 @@ public:
         onReset();
     }
 
-    void deinitialise() override    { tempoPosition.reset(); }
+    void deinitialise() override    { const juce::SpinLock::ScopedLockType dspGuard (dspLock); tempoPosition.reset(); }
 
     void applyToBuffer (const te::PluginRenderContext& fc) override
     {
+        const juce::SpinLock::ScopedTryLockType dspGuard (dspLock);
+
+        if (! dspGuard.isLocked())
+            return;     // being set up again for a new rate or buffer size
+
         if (fc.bufferForMidiMessages == nullptr || tempoPosition == nullptr)
             return;
 

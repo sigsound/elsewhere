@@ -123,6 +123,7 @@ struct DelayLine
         delay = juce::jlimit (1.0f, (float) (len - 2), delay);
         float rp = (float) pos - delay;
         if (rp < 0) rp += (float) len;
+        if (rp >= (float) len) rp = 0.0f;   // (a tiny negative plus len rounds up to len itself)
         int i0 = (int) rp;
         float frac = rp - (float) i0;
         int i1 = i0 + 1 >= len ? 0 : i0 + 1;

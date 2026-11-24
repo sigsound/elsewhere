@@ -416,6 +416,7 @@ namespace Modular
             const float delay = juce::jlimit (1.0f, (float) len - 2.0f, param (0) * 0.001f * c.sr * std::pow (2.0f, in[1]));
             auto& p = pos[(size_t) v];
             float rp = (float) p - delay; if (rp < 0.0f) rp += (float) len;
+            if (rp >= (float) len) rp = 0.0f;   // (a tiny negative plus len rounds up to len itself)
             const int i0 = (int) rp, i1 = (i0 + 1) % len;
             const float frac = rp - (float) i0;
             const float wet = l[(size_t) i0] + frac * (l[(size_t) i1] - l[(size_t) i0]);
@@ -886,8 +887,12 @@ public:
     int getPatchIndex() const       { return (int) state.getProperty ("patch", -1); }
 
     //==============================================================================
+    static constexpr float cableLimit = 64.0f;
+
     void initialise (const te::PluginInitialisationInfo& info) override
     {
+        // (The engine can do this while audio is still running through the device)
+        const juce::SpinLock::ScopedLockType dspGuard (dspLock);
         rate = (float) info.sampleRate;
         // The patch runs at twice the sample rate, so FM, sync, wavefolding and the filter's
         // saturation stay clean of aliasing
@@ -916,6 +921,11 @@ public:
 
     void applyToBuffer (const te::PluginRenderContext& fc) override
     {
+        const juce::SpinLock::ScopedTryLockType dspGuard (dspLock);
+
+        if (! dspGuard.isLocked())
+            return;     // being set up again for a new rate or buffer size
+
         if (fc.destBuffer == nullptr || oversampler == nullptr)
             return;
 
@@ -1269,7 +1279,14 @@ private:
                 for (auto& node : prog->nodes)
                 {
                     for (int p = 0; p < node.numIns; ++p)
-                        in[p] = node.srcNode[(size_t) p] >= 0 ? prog->nodes[(size_t) node.srcNode[(size_t) p]].dsp->out[(size_t) v][(size_t) node.srcPort[(size_t) p]] : 0.0f;
+                    {
+                        auto x = node.srcNode[(size_t) p] >= 0 ? prog->nodes[(size_t) node.srcNode[(size_t) p]].dsp->out[(size_t) v][(size_t) node.srcPort[(size_t) p]] : 0.0f;
+
+                        // Cables can be patched in a loop with gain in it. What a cable carries is
+                        // held to a range no patch needs to leave, so a runaway loop can't reach
+                        // infinity and leave filters and delays (here and after this device) stuck
+                        in[p] = std::abs (x) <= cableLimit ? x : (x > 0.0f ? cableLimit : (x < 0.0f ? -cableLimit : 0.0f));
+                    }
                     node.dsp->process (v, in, node.patched.data(), ctx);
                 }
 
@@ -1290,8 +1307,10 @@ private:
         const float* wr = work.getReadPointer (1);
         for (int s = 0; s < num; ++s)
         {
-            const float l = std::tanh (wl[s] * outGain);
-            const float r = std::tanh (wr[s] * outGain);
+            float l = std::tanh (wl[s] * outGain);
+            float r = std::tanh (wr[s] * outGain);
+            if (! std::isfinite (l)) l = 0.0f;
+            if (! std::isfinite (r)) r = 0.0f;
             if (stereo) { L[s] = l; R[s] = r; } else L[s] = (l + r) * 0.5f;
             scope.push ((l + r) * 0.5f);
         }
