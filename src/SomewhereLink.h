@@ -248,6 +248,9 @@ private:
             auto token = readU32 (packet), seq = readU32 (packet + 4), rate = readU32 (packet + 8);
             auto frames = juce::jmin (1024, (size - 12) / 4);
 
+            if (rate < 8000 || rate > 192000)
+                continue;   // not a rate any phone sends: converting from it would never finish
+
             for (auto& s : slots)
             {
                 if (token == 0 || s.token.load() != token)
@@ -264,7 +267,9 @@ private:
                 if (s.haveSeq)
                 {
                     auto gap = (juce::int32) (seq - s.expected);
-                    if (gap < 0)
+                    if (gap < -500)
+                        gap = 0;  // far behind: the phone started sending again, counting from zero
+                    else if (gap < 0)
                         break;    // late or duplicated: too late to use
 
                     // Lost packets (a few at most): keep time by repeating the last one, fading it

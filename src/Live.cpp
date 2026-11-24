@@ -111,7 +111,7 @@ public:
     /** Sets tempo and interval length; (re)allocates capture buffers. Call while not in a hurry. */
     void configure (double bpm, double beatsPerInterval)
     {
-        auto sr = sampleRate > 0.0 ? sampleRate : 48000.0;
+        auto sr = getSampleRate() > 0.0 ? getSampleRate() : 48000.0;
         auto intervalSamples = (int) std::ceil (beatsPerInterval * 60.0 / bpm * sr) + 4096;
 
         std::array<juce::AudioBuffer<float>, numCaptures> fresh;
@@ -220,7 +220,13 @@ public:
         return n1 + n2;
     }
 
-    double getSampleRate() const   { return sampleRate; }
+    /** The interface's rate. (The plug-in's own isn't set until the engine has put it into the
+        playback graph, which is after a session starts: until then it reads 44100.) */
+    double getSampleRate() const
+    {
+        auto rate = edit.engine.getDeviceManager().getSampleRate();
+        return rate > 0.0 ? rate : sampleRate;
+    }
 
     //==============================================================================
     // Audio thread
@@ -241,7 +247,14 @@ public:
     void applyToBufferInternal (const te::PluginRenderContext& fc)
     {
         if (fc.destBuffer != nullptr && realtime)
+        {
+            // An export or bounce passes through untouched: nobody's live playing goes into the
+            // file, and the render (faster than real time) isn't sent to the others
+            if (fc.isRendering)
+                return;
+
             return processRealtime (*fc.destBuffer, fc.bufferStartSample, fc.bufferNumSamples);
+        }
 
         if (fc.destBuffer == nullptr || ! configured)
             return;
@@ -552,7 +565,9 @@ struct RealtimeReceiver : TapHolder, Realtime::Receiver
         {
             auto gap = (int32_t) (seq - expected);
 
-            if (gap < 0)
+            if (gap < -500)
+                gap = 0;   // far behind: they started sending again, counting from zero
+            else if (gap < 0)
                 return;    // late duplicate / reordered: too late to use
 
             // Lost packets: let Opus conceal them (up to a few)
@@ -659,7 +674,7 @@ struct Session::Impl : private juce::Timer
     std::shared_ptr<std::atomic<bool>> alive = std::make_shared<std::atomic<bool>> (true);
     juce::ThreadPool pool { 2 };
     int tick = 0, intervalsSent = 0, intervalsReceived = 0, nextPeerIndex = 0;
-    double configuredBpm = 0.0, configuredBeats = 0.0;
+    double configuredBpm = 0.0, configuredBeats = 0.0, configuredRate = 0.0, modeRate = 0.0;
     std::function<void()> onPeersChanged;
     std::function<void (const juce::String&, const juce::var&)> onLauncherAction;
 
@@ -867,6 +882,30 @@ struct Session::Impl : private juce::Timer
         rtChannels = std::move (channels);
     }
 
+    /** A mixer slot nobody present is using (each has its own jitter buffer, gain and meter), with
+        the gain a new arrival should start at. */
+    int freePeerIndex()
+    {
+        for (int tries = 0; tries < 16; ++tries)
+        {
+            auto index = nextPeerIndex++ % 16;
+            bool taken = false;
+
+            for (auto& [id, p] : peers)
+                taken = taken || p->index == index;
+
+            if (! taken)
+            {
+                if (tap != nullptr)
+                    tap->setPeerGain (index, 1.0f);
+
+                return index;
+            }
+        }
+
+        return nextPeerIndex++ % 16;    // more than 16 people: slots are shared
+    }
+
     /** Starts or stops the real-time path to match the project's live mode. */
     void applyMode()
     {
@@ -875,9 +914,14 @@ struct Session::Impl : private juce::Timer
 
         bool wantRealtime = isRealtime();
 
-        if (wantRealtime == tap->realtime.load() && (sender != nullptr) == wantRealtime)
+        // (The interface's rate too: the sender and receivers convert to and from it)
+        auto rate = tap->getSampleRate();
+
+        if (wantRealtime == tap->realtime.load() && (sender != nullptr) == wantRealtime
+             && (! wantRealtime || juce::approximatelyEqual (rate, modeRate)))
             return;
 
+        modeRate = rate;
         sender.reset();
         tap->realtime = wantRealtime;
 
@@ -1009,11 +1053,16 @@ struct Session::Impl : private juce::Timer
 
         auto bpm = getBpm(), beats = getBeatsPerInterval();
 
-        if (! juce::approximatelyEqual (bpm, configuredBpm) || ! juce::approximatelyEqual (beats, configuredBeats))
+        auto rate = tap->getSampleRate();
+
+        // (The rate as well: an interval is a different number of samples at another rate)
+        if (! juce::approximatelyEqual (bpm, configuredBpm) || ! juce::approximatelyEqual (beats, configuredBeats)
+             || ! juce::approximatelyEqual (rate, configuredRate))
         {
             tap->configure (bpm, beats);
             configuredBpm = bpm;
             configuredBeats = beats;
+            configuredRate = rate;
         }
     }
 
@@ -1182,8 +1231,9 @@ struct Session::Impl : private juce::Timer
                     for (auto& c : in.chunks)
                         whole.append (c.getData(), c.getSize());
 
+                    // (from the header: erasing frees what `in` refers to)
                     peer.incoming.erase (h.interval);
-                    decodeAndInstall (peer, std::move (whole), h.interval, in.startOffset, in.sampleRate);
+                    decodeAndInstall (peer, std::move (whole), h.interval, h.startOffset, h.sampleRate);
                 }
             }
 
@@ -1216,11 +1266,20 @@ struct Session::Impl : private juce::Timer
             if (ourRate > 0.0 && theirRate > 0 && ! juce::approximatelyEqual (ourRate, (double) theirRate))
             {
                 auto ratio = (double) theirRate / ourRate;
-                auto outLength = (int) std::ceil (audio->getNumSamples() / ratio);
+                auto numIn = audio->getNumSamples();
+                auto outLength = (int) std::ceil (numIn / ratio);
                 auto resampled = std::make_shared<juce::AudioBuffer<float>> (2, outLength);
+
+                // The interpolator reads a little past the last sample it needs: give it the
+                // last sample held, not whatever follows the buffer in memory
+                const int padding = (int) std::ceil (ratio) + 8;
+                audio->setSize (2, numIn + padding, true, true, false);
 
                 for (int ch = 0; ch < 2; ++ch)
                 {
+                    for (int i = 0; i < padding && numIn > 0; ++i)
+                        audio->setSample (ch, numIn + i, audio->getSample (ch, numIn - 1));
+
                     juce::LagrangeInterpolator interp;
                     interp.process (ratio, audio->getReadPointer (ch), resampled->getWritePointer (ch), outLength);
                 }
@@ -1289,7 +1348,7 @@ struct Session::Impl : private juce::Timer
             {
                 peer = std::make_shared<Peer>();
                 peer->userId = uid;
-                peer->index = nextPeerIndex++ % 16;
+                peer->index = freePeerIndex();
                 peer->isOfferer = myId() < uid;   // the lower ID makes the offer
                 notifyPeersChanged();
             }
