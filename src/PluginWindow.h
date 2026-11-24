@@ -282,6 +282,81 @@ public:
 
         UIBehaviour::recreatePluginWindowContentAsync (p);
     }
+
+    /** The engine shows every warning as a two-second bubble wherever the mouse happens to be,
+        which suits its passing remarks ("can't add that here"). The ones about a recording are
+        things to act on, so those stay on screen until they're read. */
+    void showWarningMessage (const juce::String& message) override
+    {
+        if (message.containsIgnoreCase ("disk space"))
+            warn ("The disk is nearly full. Stop recording soon and free some space, or the take may be cut short.", "Recording");
+        else if (message.containsIgnoreCase ("Couldn't add the new recording"))
+            warn ("The take couldn't be added to the project. Its audio is in the project's Samples/Recorded folder: "
+                  "drag it onto a track to bring it in.", "Recording");
+        else
+            UIBehaviour::showWarningMessage (message);
+    }
+
+    /** Shows a warning once: the same one isn't stacked up while it's still on screen or was
+        just dismissed. Any thread. */
+    static void warn (const juce::String& message, const juce::String& title = "Elsewhere")
+    {
+        // (Always from the message loop, never in the middle of whatever raised it)
+        juce::MessageManager::callAsync ([message, title]
+        {
+            static juce::String lastMessage;
+            static juce::uint32 lastTime = 0;
+            auto now = juce::Time::getMillisecondCounter();
+
+            if (message == lastMessage && now - lastTime < 30000)
+                return;
+
+            lastMessage = message;
+            lastTime = now;
+            juce::Logger::writeToLog ("Warning shown: " + message);
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, title, message);
+        });
+    }
+};
+
+//==============================================================================
+/**
+    Keeps a log file (for working out afterwards what went wrong on someone's machine), and tells
+    the user about the two recording failures the engine only writes to its log: the disk not
+    keeping up, and a write that failed.
+*/
+class AppLog : public juce::Logger
+{
+public:
+    AppLog (const juce::String& folderName)
+        : file (juce::FileLogger::createDefaultAppLogger (folderName, "Elsewhere.log",
+                                                          juce::String ("Elsewhere ") + ELSEWHERE_VERSION + ", " + juce::SystemStats::getOperatingSystemName(),
+                                                          512 * 1024))
+    {
+        juce::Logger::setCurrentLogger (this);
+    }
+
+    ~AppLog() override      { juce::Logger::setCurrentLogger (nullptr); }
+
+    juce::File getFile() const      { return file != nullptr ? file->getLogFile() : juce::File(); }
+
+private:
+    std::unique_ptr<juce::FileLogger> file;
+
+    void logMessage (const juce::String& message) override
+    {
+        if (file != nullptr)
+            file->logMessage (message);
+
+        juce::Logger::outputDebugString (message);
+
+        if (message.contains ("Audio recording can't keep up"))
+            ElsewhereUIBehaviour::warn ("The disk isn't keeping up with the recording. Nothing has been lost yet, but stop when you can: "
+                                        "record to a faster or less busy disk, or record fewer tracks at once.", "Recording");
+        else if (message.contains ("Audio recording failed to write to disk"))
+            ElsewhereUIBehaviour::warn ("The recording couldn't be written to disk, so it has stopped. Check that the disk isn't full and "
+                                        "that the project's folder can be written to. What was recorded up to now is kept.", "Recording");
+    }
 };
 
 } // namespace elsewhere

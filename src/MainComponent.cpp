@@ -236,6 +236,15 @@ MainComponent::MainComponent (te::Engine& e, const juce::File& editFile, AppActi
 MainComponent::~MainComponent()
 {
     stopTimer();
+
+    // Closed mid-take (quitting, opening another project): the take is kept, and saved, as it
+    // is when recording stops any other way
+    if (auto& transport = project->getEdit().getTransport(); transport.isRecording())
+    {
+        transport.stop (false, false);
+        EngineHelpers::keepInputWhenOverloaded (engine, false);
+        project->save();
+    }
     engine.getMidiLearnState().setActive (false);
 
     if (ElsewhereUIBehaviour::currentEdit() == &project->getEdit())

@@ -127,6 +127,7 @@ public:
         if (! isTestRun)
             Legacy::moveAppFolders();
 
+        appLog = std::make_unique<AppLog> (isTestRun ? "Elsewhere Test" : "Elsewhere");
         engine = std::make_unique<te::Engine> (isTestRun ? "Elsewhere Test" : "Elsewhere", std::make_unique<ElsewhereUIBehaviour>(), std::make_unique<ElsewhereEngineBehaviour> (! commandLine.contains ("--no-audio")));
         Export::registerMp3Encoder (*engine);
 
@@ -401,6 +402,7 @@ public:
         mainComponent = nullptr;
         window = nullptr;
         engine = nullptr;
+        appLog = nullptr;
         juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
     }
 
@@ -945,6 +947,7 @@ private:
     }
 
     ElsewhereLookAndFeel lookAndFeel;
+    std::unique_ptr<AppLog> appLog;
     std::unique_ptr<te::Engine> engine;
     /** Esc leaves a modulator's Map mode. */
     struct EscapeCancelsMapping : public juce::KeyListener
@@ -2414,6 +2417,18 @@ private:
 
     void confirmDiscardChanges (std::function<void()> then)
     {
+        // Mid-take: stop and keep it first (stopping saves the project), then carry on
+        if (mainComponent != nullptr)
+        {
+            auto& edit = mainComponent->getProject().getEdit();
+
+            if (edit.getTransport().isRecording())
+            {
+                EngineHelpers::toggleRecord (edit);
+                mainComponent->getProject().save();
+            }
+        }
+
         if (mainComponent == nullptr || ! mainComponent->getProject().hasChangedSinceSaved())
             return then();
 

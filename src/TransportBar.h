@@ -387,6 +387,7 @@ public:
         cpu.setJustificationType (juce::Justification::centredRight);
         cpu.setColour (juce::Label::textColourId, Colours::textDim);
         cpu.setFont (juce::FontOptions (11.0f));
+        cpu.setTitle ("Processor load and dropouts");
         addAndMakeVisible (cpu);
 
         status.setJustificationType (juce::Justification::centredRight);
@@ -498,7 +499,7 @@ public:
 
         viewToggle.setBounds (small (r.removeFromRight (76)));
         r.removeFromRight (8);
-        cpu.setBounds (r.removeFromRight (64));
+        cpu.setBounds (r.removeFromRight (dropouts > 0 ? 150 : 64));
 
         // The transport gets its room first; the status (or Back to Arrangement, which shows
         // in its place) has what's left, up to 180
@@ -573,6 +574,8 @@ private:
 
     // What the transport was doing last time, so a change can be announced
     bool wasPlaying = false, wasRecording = false;
+    int dropouts = 0, xrunsAtStart = 0;
+    bool countingDropouts = false, saidDropout = false;
 
     void tap()
     {
@@ -708,9 +711,48 @@ private:
             position.setColour (juce::Label::textColourId, Colours::text);
         }
 
+        // Dropouts: times the interface was kept waiting for its audio, counted from when the
+        // transport last started, so a take that has a click in it says so (and keeps saying so
+        // after it stops, until the next one starts)
+        auto xruns = edit.engine.getDeviceManager().deviceManager.getXRunCount();
+        const bool running = transport.isPlaying() || transport.isRecording();
+
+        if (running && ! countingDropouts)
+            xrunsAtStart = xruns;
+
+        if (running)
+        {
+            auto now = juce::jmax (0, xruns - xrunsAtStart);
+
+            if (now > dropouts && transport.isRecording() && ! saidDropout)
+            {
+                A11y::announce ("Dropout while recording");
+                saidDropout = true;
+            }
+
+            if ((now > 0) != (dropouts > 0))
+            {
+                dropouts = now;
+                resized();
+            }
+
+            dropouts = now;
+        }
+
+        if (running != countingDropouts && running)
+            saidDropout = false;
+
+        countingDropouts = running;
+
         auto load = edit.engine.getDeviceManager().getCpuUsage();
-        cpu.setText ("CPU " + juce::String (juce::roundToInt (load * 100.0f)) + "%", juce::dontSendNotification);
-        cpu.setColour (juce::Label::textColourId, load > 0.8f ? Theme::readable (Colours::record) : Colours::textDim);
+        auto loadText = "CPU " + juce::String (juce::roundToInt (load * 100.0f)) + "%";
+        cpu.setText (dropouts > 0 ? juce::String (dropouts) + (dropouts == 1 ? " dropout   " : " dropouts   ") + loadText : loadText,
+                     juce::dontSendNotification);
+        cpu.setColour (juce::Label::textColourId, load > 0.8f || dropouts > 0 ? Theme::readable (Colours::record) : Colours::textDim);
+        cpu.setTooltip (dropouts > 0 ? "The audio interface was kept waiting " + juce::String (dropouts) + (dropouts == 1 ? " time" : " times")
+                                         + " since playback last started: each can be a click. If it happens while recording, "
+                                           "raise the buffer size in Audio Settings or freeze heavy tracks."
+                                     : juce::String ("Processor load of the audio engine"));
 
         refresh();
     }
