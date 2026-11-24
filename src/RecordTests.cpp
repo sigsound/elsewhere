@@ -738,6 +738,30 @@ int run (const juce::StringArray& args)
         log.check (trackName() == "Not saved yet", "with what was last saved (" + trackName() + ")");
     }
 
+    // Two computers with a project open both stay in its lock file
+    {
+        log.title ("Open on another computer");
+        Rig rig (outDir, "lock", 48000.0, 256, 1);
+        auto lockFile = rig.project->getFolder().getChildFile (Project::lockFileName);
+        auto now = juce::String (juce::Time::currentTimeMillis());
+        log.check (! rig.project->getForeignLock().has_value(), "nobody else to begin with");
+
+        // An earlier version on another computer writes the file with only itself in it
+        lockFile.replaceWithText ("{ \"user\": \"Sam\", \"machine\": \"Sams-Mac\", \"heartbeat\": " + now + ", \"app\": \"Elsewhere 0.19.1\" }");
+        auto other = rig.project->getForeignLock();
+        log.check (other.has_value() && other->user == "Sam", "the other computer shows as having it open");
+
+        rig.project->refreshLock();
+        other = rig.project->getForeignLock();
+        log.check (other.has_value() && other->machine == "Sams-Mac", "and still does after this one's heartbeat");
+        log.check (lockFile.loadFileAsString().contains (juce::SystemStats::getComputerName()), "which names this computer too");
+
+        rig.project.reset();
+        log.check (lockFile.existsAsFile(), "closing here leaves the lock to the other computer");
+        lockFile.replaceWithText ("{ \"user\": \"Sam\", \"machine\": \"Sams-Mac\", \"heartbeat\": 1000 }");
+        log.check (! Project::readForeignLock (lockFile.getParentDirectory()).has_value(), "a lock not refreshed for minutes doesn't count");
+    }
+
     log.text << "\n" << (log.failures == 0 ? "ALL RECORD TESTS PASSED" : juce::String (log.failures) + " failed") << "\n";
     outDir.getChildFile ("record-test.txt").replaceWithText (log.text);
     std::cout << log.text;

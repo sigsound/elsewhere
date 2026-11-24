@@ -480,27 +480,50 @@ public:
     /** Returns details of someone else's recent lock on a project folder, if there is one. */
     static std::optional<LockInfo> readForeignLock (const juce::File& folder)
     {
+        auto others = readForeignLocks (folder);
+        return others.empty() ? std::nullopt : std::optional<LockInfo> (others.front());
+    }
+
+    /** Everyone else who has the project open. The lock file names whoever wrote it last and,
+        under "others", everyone that writer could see, so two machines taking turns to write it
+        don't hide each other (versions before this only wrote, and only read, the first). */
+    static std::vector<LockInfo> readForeignLocks (const juce::File& folder)
+    {
+        std::vector<LockInfo> result;
         auto f = folder.getChildFile (lockFileName);
 
         if (! f.existsAsFile())
-            return std::nullopt;
+            return result;
 
         auto json = juce::JSON::parse (f.loadFileAsString());
 
-        LockInfo info;
-        info.user = json["user"].toString();
-        info.machine = json["machine"].toString();
-        info.heartbeat = juce::Time ((juce::int64) json["heartbeat"]);
-        info.isOurs = info.machine == juce::SystemStats::getComputerName()
-                        && info.user == juce::SystemStats::getFullUserName();
+        auto add = [&result] (const juce::var& entry)
+        {
+            LockInfo info;
+            info.user = entry["user"].toString();
+            info.machine = entry["machine"].toString();
+            info.heartbeat = juce::Time ((juce::int64) entry["heartbeat"]);
+            info.isOurs = info.machine == juce::SystemStats::getComputerName()
+                            && info.user == juce::SystemStats::getFullUserName();
 
-        if (info.isOurs)
-            return std::nullopt;
+            if (info.isOurs || info.machine.isEmpty()
+                 || juce::Time::getCurrentTime() - info.heartbeat > juce::RelativeTime::minutes (lockStaleMinutes))
+                return;
 
-        if (juce::Time::getCurrentTime() - info.heartbeat > juce::RelativeTime::minutes (lockStaleMinutes))
-            return std::nullopt;
+            for (auto& existing : result)
+                if (existing.machine == info.machine && existing.user == info.user)
+                    return;
 
-        return info;
+            result.push_back (info);
+        };
+
+        add (json);
+
+        if (auto* others = json["others"].getArray())
+            for (auto& o : *others)
+                add (o);
+
+        return result;
     }
 
     void refreshLock()          { writeLock(); }
@@ -593,20 +616,36 @@ private:
         o->setProperty ("machine", juce::SystemStats::getComputerName());
         o->setProperty ("heartbeat", juce::Time::getCurrentTime().toMilliseconds());
         o->setProperty ("app", juce::String ("Elsewhere ") + ELSEWHERE_VERSION);
+
+        // Keep everyone else who's here in the file, with the time they last said so
+        juce::Array<juce::var> others;
+
+        for (auto& other : readForeignLocks (getFolder()))
+        {
+            juce::DynamicObject::Ptr e = new juce::DynamicObject();
+            e->setProperty ("user", other.user);
+            e->setProperty ("machine", other.machine);
+            e->setProperty ("heartbeat", other.heartbeat.toMilliseconds());
+            others.add (juce::var (e.get()));
+        }
+
+        if (! others.isEmpty())
+            o->setProperty ("others", others);
+
         getFolder().getChildFile (lockFileName).replaceWithText (juce::JSON::toString (juce::var (o.get())));
     }
 
-    void acquireLock()
-    {
-        if (! getForeignLock())
-            writeLock();
-    }
+    void acquireLock()      { writeLock(); }
 
     void releaseLock()
     {
         auto f = getFolder().getChildFile (lockFileName);
 
-        if (f.existsAsFile() && ! getForeignLock())
+        if (! f.existsAsFile())
+            return;
+
+        // Someone else is still here: leave the file to them (their next heartbeat drops us)
+        if (readForeignLocks (getFolder()).empty())
             f.deleteFile();
     }
 };
