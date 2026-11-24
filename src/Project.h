@@ -216,7 +216,9 @@ public:
     /** Who saved, recorded in the file for Version History. */
     juce::String savedByName;
 
-    bool save()
+    /** Returns whether the project was written. warnOfFailure shows the engine's own message
+        when it wasn't; pass false to show your own. */
+    bool save (bool warnOfFailure = true)
     {
         if (beforeSave)
             beforeSave();
@@ -225,11 +227,15 @@ public:
             edit->state.setProperty ("elsewhereSavedBy", savedByName, nullptr);
 
         makeBackup();
-        te::EditFileOperations (*edit).save (true, true, false);
+        // The answer comes back before save() returns, unless the engine is showing its own
+        // failure message (which answers later, and then only "not saved" matters)
+        auto written = std::make_shared<bool> (false);
+        te::EditFileOperations (*edit).save (warnOfFailure, true, false, [written] (bool r) { *written = r; });
+        auto ok = *written;
 
         if (afterSave)
             afterSave();
-        auto ok = ! edit->hasChangedSinceSaved();
+
         lastSaveTime = juce::Time::getCurrentTime();
         return ok;
     }

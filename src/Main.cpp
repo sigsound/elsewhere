@@ -29,6 +29,7 @@
 #include "AbletonTests.h"
 #include "CubaseTests.h"
 #include "PerfTest.h"
+#include "RecordTests.h"
 #include "Showcase.h"
 
 namespace elsewhere
@@ -67,7 +68,7 @@ public:
                 || args.contains ("--live-test") || args.contains ("--device-test") || args.contains ("--plugin-test")
                 || args.contains ("--somewhere-test") || args.contains ("--render-kits")
                 || args.contains ("--dawproject-test") || args.contains ("--aaf-test") || args.contains ("--import-test")
-                || args.contains ("--ableton-test") || args.contains ("--cubase-test") || args.contains ("--perf-test")
+                || args.contains ("--ableton-test") || args.contains ("--cubase-test") || args.contains ("--perf-test") || args.contains ("--record-test")
                 || args.contains ("--project-audio-test") || args.contains ("--takes-test") || args.contains ("--midi-lanes-test") || args.contains ("--routing-test") || args.contains ("--surfaces-test") || args.contains ("--export-test")
                 || args.contains ("--accessibility-test");
     }
@@ -103,6 +104,15 @@ public:
         if (commandLine.contains ("--perf-test"))
         {
             setApplicationReturnValue (PerfTest::run (getCommandLineParameterArray()));
+            quit();
+            return;
+        }
+
+        // Dev aid: --record-test <outDir> records a known signal through its own engine (no audio
+        // device), checks what landed on disk and on the timeline, and quits
+        if (commandLine.contains ("--record-test"))
+        {
+            setApplicationReturnValue (RecordTests::run (getCommandLineParameterArray()) == 0 ? 0 : 1);
             quit();
             return;
         }
@@ -493,24 +503,62 @@ public:
         confirmDiscardChanges ([this, f] { openProjectChecked (f); });
     }
 
-    void saveProject() override
+    void saveProject() override     { saveProjectThen ({}); }
+
+    /** Saves, then says whether the project is on disk. Quitting and opening another project
+        wait for this, so "Save" can't go on to close a project that wasn't saved: the answer
+        may come later (the "open elsewhere" question) or be no (a full disk, a read-only folder). */
+    void saveProjectThen (std::function<void (bool)> done)
     {
-        if (mainComponent != nullptr)
+        if (mainComponent == nullptr)
         {
-            auto& p = mainComponent->getProject();
+            if (done)
+                done (false);
 
-            if (auto lock = p.getForeignLock(); lock && ! Collab::isEnabled (p.getEdit()))
-            {
-                juce::AlertWindow::showOkCancelBox (juce::MessageBoxIconType::WarningIcon, "Project is open elsewhere",
-                    lock->user + " has this project open on " + lock->machine + ". If you both save, Dropbox will create a "
-                    "conflicted copy. Save anyway?", "Save", "Cancel", nullptr,
-                    juce::ModalCallbackFunction::create ([this] (int r) { if (r == 1) mainComponent->getProject().save(); }));
-                return;
-            }
-
-            p.save();
-            addRecentProject (p.getEditFile());
+            return;
         }
+
+        auto& p = mainComponent->getProject();
+
+        if (auto lock = p.getForeignLock(); lock && ! Collab::isEnabled (p.getEdit()))
+        {
+            juce::AlertWindow::showOkCancelBox (juce::MessageBoxIconType::WarningIcon, "Project is open elsewhere",
+                lock->user + " has this project open on " + lock->machine + ". If you both save, Dropbox will create a "
+                "conflicted copy. Save anyway?", "Save", "Cancel", nullptr,
+                juce::ModalCallbackFunction::create ([this, done] (int r)
+                {
+                    auto saved = r == 1 && saveNow();
+
+                    if (done)
+                        done (saved);
+                }));
+            return;
+        }
+
+        auto saved = saveNow();
+
+        if (done)
+            done (saved);
+    }
+
+    /** Writes the project, and says so if it couldn't. */
+    bool saveNow()
+    {
+        if (mainComponent == nullptr)
+            return false;
+
+        auto& p = mainComponent->getProject();
+
+        if (p.save (false))
+        {
+            addRecentProject (p.getEditFile());
+            return true;
+        }
+
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Couldn't save",
+            "\"" + p.getName() + "\" couldn't be saved to " + p.getFolder().getFullPathName() + ". Check that the disk isn't full "
+            "and that you can write to that folder. The project is still open with your changes.");
+        return false;
     }
 
     void saveProjectAs() override
@@ -2310,7 +2358,8 @@ private:
 
         juce::AlertWindow::showAsync (options, [this, then] (int result)
         {
-            if (result == 1)       { saveProject(); then(); }
+            // Only carry on once the project really is saved
+            if (result == 1)       { saveProjectThen ([then] (bool saved) { if (saved) then(); }); }
             else if (result == 2)  { then(); }
         });
     }

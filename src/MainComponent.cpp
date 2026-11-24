@@ -1204,6 +1204,11 @@ void MainComponent::changeListenerCallback (juce::ChangeBroadcaster* source)
     {
         auto& transport = project->getEdit().getTransport();
 
+        // However recording started or stopped (a control surface, the space bar, the end of
+        // a punch), nothing is cut out of a take while it runs
+        if (wasRecording != transport.isRecording())
+            EngineHelpers::keepInputWhenOverloaded (engine, transport.isRecording());
+
         // Save straight after a recording, so a crash can't lose a take
         if (wasRecording && ! transport.isRecording())
             project->save();

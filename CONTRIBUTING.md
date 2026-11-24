@@ -25,6 +25,7 @@ $APP --ableton-test /tmp/elsewhere-tests         # Ableton Live set import
 $APP --cubase-test /tmp/elsewhere-tests          # Cubase project import
 $APP --project-audio-test /tmp/elsewhere-tests   # keeping project audio inside the project
 $APP --takes-test /tmp/elsewhere-tests           # takes, take lanes and comping
+$APP --record-test /tmp/elsewhere-tests          # recording: every sample, in place, under load
 $APP --midi-lanes-test /tmp/elsewhere-tests      # velocity and controller lanes
 $APP --routing-test /tmp/elsewhere-tests         # buses, no-output tracks and sidechains
 $APP --surfaces-test /tmp/elsewhere-tests        # Mackie Control surfaces

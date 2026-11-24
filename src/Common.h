@@ -77,6 +77,15 @@ namespace EngineHelpers
     /** Where recording actually begins (after the count-in and any pre-roll), for the countdown. */
     inline te::TimePosition& recordStartTime()  { static te::TimePosition t; return t; }
 
+    /*  When the audio callback runs late the engine mutes a buffer to catch up, and doesn't
+        read the inputs for it either: that buffer is cut out of whatever is recording, and the
+        rest of the take sits early. While recording, keeping every sample matters more than
+        catching up, so the mute is off (the measured load never goes above 1). */
+    inline void keepInputWhenOverloaded (te::Engine& engine, bool recording)
+    {
+        engine.getDeviceManager().setCpuLimitBeforeMuting (recording ? 1000.0 : 0.98);
+    }
+
     inline void toggleRecord (te::Edit& edit)
     {
         auto& transport = edit.getTransport();
@@ -84,8 +93,11 @@ namespace EngineHelpers
         if (transport.isRecording())
         {
             transport.stop (false, false);
+            keepInputWhenOverloaded (edit.engine, false);
             return;
         }
+
+        keepInputWhenOverloaded (edit.engine, true);
 
         auto pos = transport.getPosition();
 
