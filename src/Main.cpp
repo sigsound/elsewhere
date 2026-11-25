@@ -176,6 +176,79 @@ public:
             return;
         }
 
+        // Dev aid: --input-check listens to the audio interface as it is set up for real, and
+        // prints what arrives on each input and what reaches a track given the third one. Quits.
+        if (commandLine.contains ("--input-check"))
+        {
+            auto wait = [] (int ms) { juce::MessageManager::getInstance()->runDispatchLoopUntil (ms); };
+            wait (1500);
+            enableAllChannels();
+            wait (700);
+
+            auto& dm = engine->getDeviceManager();
+            if (auto* d = dm.deviceManager.getCurrentAudioDevice())
+                std::cout << "DEVICE " << d->getName() << " rate=" << d->getCurrentSampleRate() << " buffer=" << d->getCurrentBufferSizeSamples()
+                          << " ins=" << d->getActiveInputChannels().countNumberOfSetBits() << std::endl;
+
+            auto edit = te::createEmptyEdit (*engine, juce::File::createTempFile (".tracktionedit"));
+            edit->ensureNumberOfAudioTracks (1);
+            auto track = te::getAudioTracks (*edit).getFirst();
+            edit->getMasterVolumePlugin()->setVolumeDb (-100.0f);   // (listen, don't play)
+            edit->getTransport().ensureContextAllocated();
+
+            for (auto wave : dm.getWaveInputDevices())
+                wave->setMonitorMode (te::InputDevice::MonitorMode::automatic);
+
+            int mono = 0;
+            for (auto instance : edit->getAllInputDevices())
+                if (auto wave = dynamic_cast<te::WaveInputDevice*> (&instance->getInputDevice()))
+                    if (wave->getChannels().size() == 1 && ++mono == 3)
+                    {
+                        EngineHelpers::assignInputToTrack (*instance, *track);
+                        instance->setRecordingEnabled (track->itemID, true);
+                        std::cout << "TRACK input=" << wave->getName() << std::endl;
+                    }
+
+            edit->dispatchPendingUpdatesSynchronously();
+            wait (500);
+
+            auto waves = dm.getWaveInputDevices();
+            std::vector<std::unique_ptr<te::LevelMeasurer::Client>> clients;
+            for (auto wave : waves)
+            {
+                clients.push_back (std::make_unique<te::LevelMeasurer::Client>());
+                wave->levelMeasurer.addClient (*clients.back());
+            }
+
+            te::LevelMeasurer::Client trackClient;
+            if (auto meter = track->getLevelMeterPlugin())
+                meter->measurer.addClient (trackClient);
+
+            std::vector<float> peak (clients.size(), -200.0f);
+            float trackPeak = -200.0f;
+
+            for (int i = 0; i < 60; ++i)
+            {
+                wait (50);
+                for (size_t c = 0; c < clients.size(); ++c)
+                    peak[c] = juce::jmax (peak[c], clients[c]->getAndClearAudioLevel (0).dB);
+                trackPeak = juce::jmax (trackPeak, trackClient.getAndClearAudioLevel (0).dB);
+            }
+
+            for (size_t c = 0; c < clients.size(); ++c)
+                std::cout << "INPUT " << waves[(int) c]->getName() << " peak=" << juce::String (peak[c], 1) << " dB" << std::endl;
+            std::cout << "TRACK peak=" << juce::String (trackPeak, 1) << " dB" << std::endl;
+
+            for (size_t c = 0; c < clients.size(); ++c)
+                waves[(int) c]->levelMeasurer.removeClient (*clients[c]);
+            if (auto meter = track->getLevelMeterPlugin())
+                meter->measurer.removeClient (trackClient);
+
+            edit.reset();
+            quit();
+            return;
+        }
+
         // Dev aid: --device-test <outDir> checks the DSP of Elsewhere's built-in devices and quits
         if (commandLine.contains ("--device-test"))
         {
@@ -326,6 +399,75 @@ public:
 
         if (mainComponent != nullptr)
             mainComponent->grabKeyboardFocus();
+
+        // Dev aid: --meter-report opens the app as usual, listens for a few seconds, prints what
+        // each input receives and what each track's meter shows, and quits
+        if (commandLine.contains ("--meter-report"))
+        {
+            juce::Timer::callAfterDelay (3000, [this]
+            {
+                if (mainComponent == nullptr) { std::cout << "REPORT no project open" << std::endl; quit(); return; }
+
+                struct Listening
+                {
+                    juce::OwnedArray<te::LevelMeasurer::Client> inputs, tracks;
+                    juce::Array<te::WaveInputDevice*> waves;
+                    juce::Array<te::AudioTrack*> audioTracks;
+                    std::vector<float> inputPeak, trackPeak;
+                };
+
+                auto l = std::make_shared<Listening>();
+                auto& edit = mainComponent->getProject().getEdit();
+                for (auto wave : engine->getDeviceManager().getWaveInputDevices())
+                    l->waves.add (wave);
+
+                for (auto wave : l->waves)
+                    wave->levelMeasurer.addClient (*l->inputs.add (new te::LevelMeasurer::Client()));
+
+                for (auto t : te::getAudioTracks (edit))
+                    if (auto meter = t->getLevelMeterPlugin())
+                    {
+                        l->audioTracks.add (t);
+                        meter->measurer.addClient (*l->tracks.add (new te::LevelMeasurer::Client()));
+                    }
+
+                l->inputPeak.assign ((size_t) l->inputs.size(), -200.0f);
+                l->trackPeak.assign ((size_t) l->tracks.size(), -200.0f);
+
+                for (int i = 1; i <= 40; ++i)
+                    juce::Timer::callAfterDelay (i * 100, [this, l, i]
+                    {
+                        for (int c = 0; c < l->inputs.size(); ++c)
+                            l->inputPeak[(size_t) c] = juce::jmax (l->inputPeak[(size_t) c], l->inputs[c]->getAndClearAudioLevel (0).dB);
+                        for (int c = 0; c < l->tracks.size(); ++c)
+                            l->trackPeak[(size_t) c] = juce::jmax (l->trackPeak[(size_t) c], l->tracks[c]->getAndClearAudioLevel (0).dB);
+
+                        if (i < 40)
+                            return;
+
+                        for (int c = 0; c < l->inputs.size(); ++c)
+                            if (l->waves[c]->getChannels().size() == 1)
+                                std::cout << "REPORT input " << l->waves[c]->getName() << " " << juce::String (l->inputPeak[(size_t) c], 1) << " dB" << std::endl;
+
+                        for (int c = 0; c < l->tracks.size(); ++c)
+                        {
+                            auto& t = *l->audioTracks[c];
+                            auto in = EngineHelpers::getInputOnTrack (t);
+                            std::cout << "REPORT track " << t.getName() << " in=" << (in != nullptr ? in->getInputDevice().getName() : juce::String ("none"))
+                                      << " armed=" << (int) EngineHelpers::isTrackArmed (t)
+                                      << " live=" << (int) (in != nullptr && in->isLivePlayEnabled (t))
+                                      << " meter=" << juce::String (l->trackPeak[(size_t) c], 1) << " dB" << std::endl;
+                        }
+
+                        for (int c = 0; c < l->inputs.size(); ++c)
+                            l->waves[c]->levelMeasurer.removeClient (*l->inputs[c]);
+                        for (int c = 0; c < l->tracks.size(); ++c)
+                            if (auto meter = l->audioTracks[c]->getLevelMeterPlugin())
+                                meter->measurer.removeClient (*l->tracks[c]);
+                        quit();
+                    });
+            });
+        }
 
         // Dev aid: --live-test <A|B> <outDir> runs a scripted two-person live session
         if (commandLine.contains ("--live-test"))

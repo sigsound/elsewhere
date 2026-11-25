@@ -457,6 +457,117 @@ namespace
     }
 
     //==============================================================================
+    /** Hearing an input: a track given one input of several, armed, as you set it up in the app. */
+    void monitoring (Log& log, const juce::File& dir)
+    {
+        log.title ("Hearing an input: eight inputs, a track on each, one at a time");
+        Rig rig (dir, "monitor", 48000.0, 256, 8);
+        auto& edit = rig.edit();
+        auto tracks = te::getAudioTracks (edit);
+
+        for (auto wave : rig.engine.getDeviceManager().getWaveInputDevices())
+            wave->setMonitorMode (te::InputDevice::MonitorMode::automatic);
+
+        // How much of each input comes out of the speakers
+        auto heard = [&rig] (double seconds)
+        {
+            std::vector<double> share (8, 0.0);
+            double power = 0.0;
+            juce::AudioBuffer<float> buffer (8, rig.blockSize);
+            juce::MidiBuffer midi;
+
+            for (auto left = (juce::int64) (seconds * rig.rate); left > 0; left -= rig.blockSize)
+            {
+                for (int ch = 0; ch < 8; ++ch)
+                    for (int i = 0; i < rig.blockSize; ++i)
+                        buffer.setSample (ch, i, testSample (ch, rig.fed + i));
+
+                rig.hosted.processBlock (buffer, midi);
+
+                for (int i = 0; i < rig.blockSize; ++i)
+                {
+                    const double out = buffer.getSample (0, i);
+                    for (int ch = 0; ch < 8; ++ch)
+                        share[(size_t) ch] += out * testSample (ch, rig.fed + i);
+                    power += juce::square ((double) testSample (0, rig.fed + i));
+                }
+
+                rig.fed += rig.blockSize;
+            }
+
+            for (auto& v : share) v /= power;
+            return share;
+        };
+
+        int right = 0;
+        juce::String wrong;
+
+        for (int only = 0; only < 8; ++only)
+        {
+            for (int i = 0; i < tracks.size(); ++i)
+                EngineHelpers::armTrack (*tracks[i], i == only);
+            edit.dispatchPendingUpdatesSynchronously();
+            rig.settle (150);
+            heard (0.2);
+            const auto share = heard (0.5);
+
+            bool ok = share[(size_t) only] > 0.2;
+            for (int ch = 0; ch < 8; ++ch)
+                ok = ok && (ch == only || std::abs (share[(size_t) ch]) < 0.02);
+
+            if (ok) ++right;
+            else
+            {
+                wrong << " [input " << (only + 1) << ":";
+                for (auto v : share) wrong << " " << juce::String (v, 2);
+                wrong << "]";
+            }
+        }
+
+        log.check (right == 8, juce::String (right) + " of 8 inputs are heard on their own track when it is armed, and nothing else is" + wrong);
+
+        // Changing an armed track's input from the menu, as you do after adding a track: the
+        // first track is given the sixth input instead of its own
+        {
+            for (auto t : tracks)
+                EngineHelpers::armTrack (*t, false);
+            EngineHelpers::armTrack (*tracks[0], true);
+            edit.dispatchPendingUpdatesSynchronously();
+            rig.settle (150);
+            heard (0.2);
+
+            int mono = 0;
+            for (auto instance : edit.getAllInputDevices())
+                if (auto wave = dynamic_cast<te::WaveInputDevice*> (&instance->getInputDevice()))
+                    if (wave->getChannels().size() == 1 && ++mono == 6)
+                    {
+                        EngineHelpers::clearInputsFromTrack (*tracks[5]);
+                        EngineHelpers::clearInputsFromTrack (*tracks[0]);
+                        EngineHelpers::assignInputToTrack (*instance, *tracks[0]);
+                    }
+
+            edit.dispatchPendingUpdatesSynchronously();
+            rig.settle (150);
+            const bool stillArmed = EngineHelpers::isTrackArmed (*tracks[0]);
+            EngineHelpers::armTrack (*tracks[0], true);
+            edit.dispatchPendingUpdatesSynchronously();
+            rig.settle (150);
+            heard (0.2);
+            const auto share = heard (0.5);
+            log.note (juce::String ("after changing an armed track's input the track is ") + (stillArmed ? "still armed" : "no longer armed"));
+            log.check (share[5] > 0.2 && std::abs (share[0]) < 0.02, "a track changed to another input and armed plays that input, not its old one ("
+                                                                      + juce::String (share[5], 2) + " new, " + juce::String (share[0], 2) + " old)");
+        }
+
+        for (auto t : tracks)
+            EngineHelpers::armTrack (*t, false);
+        edit.dispatchPendingUpdatesSynchronously();
+        rig.settle (150);
+        heard (0.2);
+        const auto quiet = heard (0.3);
+        log.check (std::all_of (quiet.begin(), quiet.end(), [] (double v) { return std::abs (v) < 0.02; }), "with no track armed, no input is heard");
+    }
+
     /** Sixteen inputs at once at 96 kHz, as fast as the engine will go: does the disk keep up? */
     void manyInputs (Log& log, const juce::File& dir)
     {
@@ -625,6 +736,7 @@ int run (const juce::StringArray& args)
     straightTake (log, outDir, 44100.0, 512, 1000, 250);
     punchTake (log, outDir);
     loopTake (log, outDir);
+    monitoring (log, outDir);
     manyInputs (log, outDir);
 
     log.title ("A late audio callback while recording, 48000 Hz, buffer 256, 12 s in real time");
