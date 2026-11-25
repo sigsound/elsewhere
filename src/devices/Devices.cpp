@@ -14,6 +14,7 @@
 #include "OrganicDevice.h"
 #include "HazeDevice.h"
 #include "MidiEffects.h"
+#include "EchoDevice.h"
 
 namespace elsewhere
 {
@@ -35,7 +36,7 @@ const std::vector<DeviceRegistry::Entry>& DeviceRegistry::getAll()
           [] (te::PluginCreationInfo i) -> te::Plugin::Ptr { return new MonoDevice (i); } },
         { ArpDevice::xmlTypeName,        "Arpeggiator", "Plays held notes as a pattern, in time with the song", false,
           [] (te::PluginCreationInfo i) -> te::Plugin::Ptr { return new ArpDevice (i); }, true },
-        { StepsDevice::xmlTypeName,      "Step Sequencer", "16-step note sequencer, plays with the transport or follows your keys", false,
+        { StepsDevice::xmlTypeName,      "Step Sequencer", "Note sequencer of up to 32 steps, with chance, repeats, slides and lanes that go round at their own length", false,
           [] (te::PluginCreationInfo i) -> te::Plugin::Ptr { return new StepsDevice (i); }, true },
         { EqDevice::xmlTypeName,         "EQ",         "8-band parametric EQ with a spectrum analyzer", false,
           [] (te::PluginCreationInfo i) -> te::Plugin::Ptr { return new EqDevice (i); } },
@@ -47,6 +48,8 @@ const std::vector<DeviceRegistry::Entry>& DeviceRegistry::getAll()
           [] (te::PluginCreationInfo i) -> te::Plugin::Ptr { return new MasterDevice (i); } },
         { ReverbDevice::xmlTypeName,     "Reverb",     "Algorithmic reverb with early reflections, modulation and freeze", false,
           [] (te::PluginCreationInfo i) -> te::Plugin::Ptr { return new ReverbDevice (i); } },
+        { EchoDevice::xmlTypeName,       "Tape Echo",  "Tape loop echo with three playback heads, wow and flutter, and wear that makes every repeat decay differently", false,
+          [] (te::PluginCreationInfo i) -> te::Plugin::Ptr { return new EchoDevice (i); } },
     };
 
     return all;
