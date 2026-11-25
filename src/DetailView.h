@@ -167,10 +167,40 @@ public:
     {
         if (e.mods.isPopupMenu())
             showMenu();
+        else
+            onTitle = e.y < titleH;
     }
 
+    // Drag a device by its title bar to move it along the chain
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        if (! onTitle || (! dragging && e.getDistanceFromDragStart() < 6))
+            return;
+
+        dragging = true;
+        if (onDrag) onDrag (*this, e);
+    }
+
+    void mouseUp (const juce::MouseEvent&) override
+    {
+        if (dragging && onDrop)
+            onDrop (*this);
+
+        onTitle = dragging = false;
+    }
+
+    void mouseMove (const juce::MouseEvent& e) override
+    {
+        setMouseCursor (e.y < titleH ? juce::MouseCursor::DraggingHandCursor : juce::MouseCursor::NormalCursor);
+    }
+
+    std::function<void (DevicePanel&, const juce::MouseEvent&)> onDrag;
+    std::function<void (DevicePanel&)> onDrop;
+    te::Plugin& getPlugin()     { return *plugin; }
+
 private:
-    static constexpr int knobW = 58;
+    static constexpr int knobW = 58, titleH = 22;
+    bool onTitle = false, dragging = false;
     te::Plugin::Ptr plugin;
     SmallToggle keyButton { "key", Colours::text };
     juce::TextButton power, editButton { juce::String::fromUTF8 ("\xe2\xa7\x89") }, menuButton { juce::String::fromUTF8 ("\xe2\x8b\xaf") };
@@ -386,6 +416,8 @@ private:
             {
                 auto* panel = panels.add (new DevicePanel (*p));
                 panel->onChanged = [this] { triggerAsyncUpdate(); };
+                panel->onDrag = [this] (DevicePanel& dragged, const juce::MouseEvent& e) { dragOver (dragged, e); };
+                panel->onDrop = [this] (DevicePanel& dragged) { drop (dragged); };
                 content.addAndMakeVisible (panel);
             }
 
@@ -422,6 +454,68 @@ private:
     }
 
     void handleAsyncUpdate() override { rebuild(); }
+
+    //==============================================================================
+    // Dragging a device along the chain
+    struct DropMarker : public juce::Component
+    {
+        DropMarker()    { setInterceptsMouseClicks (false, false); }
+        void paint (juce::Graphics& g) override     { g.setColour (Colours::accent); g.fillRoundedRectangle (getLocalBounds().toFloat(), 1.5f); }
+    };
+
+    DropMarker dropMarker;
+    int dropSlot = -1;      // the gap the dragged device would go into: 0 is before the first
+
+    void dragOver (DevicePanel& dragged, const juce::MouseEvent& e)
+    {
+        const int x = e.getEventRelativeTo (&content).x;
+        dropSlot = panels.size();
+
+        for (int i = 0; i < panels.size(); ++i)
+            if (x < panels[i]->getBounds().getCentreX())
+            {
+                dropSlot = i;
+                break;
+            }
+
+        const int at = dropSlot < panels.size() ? panels[dropSlot]->getX() - 5 : panels.getLast()->getRight() + 1;
+        content.addAndMakeVisible (dropMarker);
+        dropMarker.setBounds (at, 6, 4, content.getHeight() - 12);
+        dropMarker.toFront (false);
+        dragged.setAlpha (0.55f);
+
+        // Near either end of what's showing, bring more of the chain into view
+        const auto inView = e.getEventRelativeTo (&viewport);
+        viewport.autoScroll (inView.x, viewport.getHeight() / 2, 40, 14);
+    }
+
+    void drop (DevicePanel& dragged)
+    {
+        dragged.setAlpha (1.0f);
+        content.removeChildComponent (&dropMarker);
+        const int from = panels.indexOf (&dragged), slot = dropSlot;
+        dropSlot = -1;
+
+        // (the gaps either side of a device are where it already is)
+        if (from < 0 || slot < 0 || slot == from || slot == from + 1)
+            return;
+
+        te::Plugin::Ptr p = &dragged.getPlugin();
+        auto* list = p->getOwnerList();
+        if (list == nullptr)
+            return;
+
+        // Where that gap is in the track's own list, which also holds its fader and meter
+        int index = slot < panels.size() ? list->indexOf (&panels[slot]->getPlugin())
+                                         : list->indexOf (&panels.getLast()->getPlugin()) + 1;
+        if (list->indexOf (p.get()) < index)
+            --index;    // taking it out first moves everything after it down one
+
+        p->edit.getUndoManager().beginNewTransaction ("Move Device");
+        p->removeFromParent();
+        list->insertPlugin (p, index, nullptr);
+        triggerAsyncUpdate();
+    }
 
     void changeListenerCallback (juce::ChangeBroadcaster*) override
     {
