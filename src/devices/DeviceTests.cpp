@@ -13,6 +13,7 @@
 #include "OrganicDevice.h"
 #include "HazeDevice.h"
 #include "MidiEffects.h"
+#include "StepsDevice.h"
 #include "EchoDevice.h"
 #include "../Modulators.h"
 #include "../SessionRecorder.h"
@@ -279,6 +280,7 @@ int run (te::Engine& engine, const juce::File& outDir)
         check (r, cut < -40.0f, "48 dB/oct low cut at 200 Hz removes 50 Hz (" + juce::String (cut, 1) + " dB)");
         check (r, isFinite (low), "no NaN/inf");
         snapshot (eq, outDir.getChildFile ("eq.png"));
+        snapshotWindow (eq, outDir.getChildFile ("eq-window.png"));
     }
 
     //==============================================================================
@@ -317,6 +319,7 @@ int run (te::Engine& engine, const juce::File& outDir)
         auto limPeak = hot.getMagnitude (0, hot.getNumSamples());
         check (r, limPeak <= 0.99f, "limiter ceiling holds (peak " + juce::String (juce::Decibels::gainToDecibels (limPeak), 2) + " dBFS)");
         snapshot (comp, outDir.getChildFile ("compressor.png"));
+        snapshotWindow (comp, outDir.getChildFile ("compressor-window.png"));
     }
 
     //==============================================================================
@@ -478,6 +481,7 @@ int run (te::Engine& engine, const juce::File& outDir)
         setParam (rev.shimmer, 25.0f);
         setParam (rev.modDepth, 40.0f);
         snapshot (rev, outDir.getChildFile ("reverb.png"));
+        snapshotWindow (rev, outDir.getChildFile ("reverb-window.png"));
         setParam (rev.space, (float) ReverbDevice::plate);
         setParam (rev.diffusion, 20.0f);
         snapshot (rev, outDir.getChildFile ("reverb-plate.png"));
@@ -625,6 +629,7 @@ int run (te::Engine& engine, const juce::File& outDir)
         check (r, drums.getSound (15) == DrumsDevice::synthesise (15), "pad goes back to its built-in sound");
 
         snapshot (drums, outDir.getChildFile ("drums.png"));
+        snapshotWindow (drums, outDir.getChildFile ("drums-window.png"));
 
         // The kits: each one renders all 16 pads, quickly enough, and plays a demo beat
         {
@@ -742,8 +747,10 @@ int run (te::Engine& engine, const juce::File& outDir)
             drums.setKit (DrumKits::indexOf ("amapiano"));
             drums.state.setProperty ("view", "pads", nullptr);
             snapshot (drums, outDir.getChildFile ("drums-pads.png"));
+            snapshotWindow (drums, outDir.getChildFile ("drums-pads-window.png"));
             drums.state.setProperty ("view", "kit", nullptr);
             snapshot (drums, outDir.getChildFile ("drums-kitview.png"));
+            snapshotWindow (drums, outDir.getChildFile ("drums-kitview-window.png"));
             Theme::apply (Themes::light); refreshLookAndFeel();
             snapshot (drums, outDir.getChildFile ("drums-light.png"));
             Theme::apply (Themes::dark); refreshLookAndFeel();
@@ -902,6 +909,7 @@ int run (te::Engine& engine, const juce::File& outDir)
             setParam (amp.cab, (float) AmpDevice::cab4x12);
             amp.initialise ({ te::TimePosition(), sr, block });
             snapshot (amp, outDir.getChildFile ("amp.png"));
+            snapshotWindow (amp, outDir.getChildFile ("amp-window.png"));
             Theme::apply (Themes::light); refreshLookAndFeel();
             snapshot (amp, outDir.getChildFile ("amp-light.png"));
             Theme::apply (Themes::dark); refreshLookAndFeel();
@@ -1023,6 +1031,7 @@ int run (te::Engine& engine, const juce::File& outDir)
         }
         setParam (master.character, 0.0f);
         snapshot (master, outDir.getChildFile ("master.png"));
+        snapshotWindow (master, outDir.getChildFile ("master-window.png"));
     }
 
     //==============================================================================
@@ -1287,14 +1296,17 @@ int run (te::Engine& engine, const juce::File& outDir)
 
         mono.loadPatch (MonoDevice::patchesFor (MonoDevice::acid)[0]);
         snapshot (mono, outDir.getChildFile ("mono-acid.png"));
+        snapshotWindow (mono, outDir.getChildFile ("mono-acid-window.png"));
         mono.loadPatch (MonoDevice::patchesFor (MonoDevice::syncLead)[0]);
         snapshot (mono, outDir.getChildFile ("mono-sync.png"));
+        snapshotWindow (mono, outDir.getChildFile ("mono-sync-window.png"));
 
         mono.loadPatch (1);
         juce::AudioBuffer<float> warm (2, (int) (sr * 0.5));
         warm.clear();
         process (mono, warm, { { 0, on (57) } });
         snapshot (mono, outDir.getChildFile ("mono.png"));
+        snapshotWindow (mono, outDir.getChildFile ("mono-window.png"));
         Theme::apply (Themes::light); refreshLookAndFeel();
         snapshot (mono, outDir.getChildFile ("mono-light.png"));
         Theme::apply (Themes::dark); refreshLookAndFeel();
@@ -1505,6 +1517,7 @@ int run (te::Engine& engine, const juce::File& outDir)
             process (pd, warm, { { 0, on (57) }, { 0, on (60) }, { 0, on (64) } });
             const juce::StringArray files { "poly-prism.png", "poly-quad.png", "poly-velvet.png", "poly-nova.png" };
             snapshot (pd, outDir.getChildFile (files[m]));
+            snapshotWindow (pd, outDir.getChildFile (m == 0 ? juce::String ("poly-window.png") : files[m].replace (".png", "-window.png")));
             silence();
         }
         pd.loadPatch (PolyDevice::patchesFor (PolyDevice::velvet)[0]);
@@ -1653,6 +1666,7 @@ int run (te::Engine& engine, const juce::File& outDir)
         warm.clear();
         process (md, warm, { { 0, on (45) } });
         snapshot (md, outDir.getChildFile ("modular.png"));
+        snapshotWindow (md, outDir.getChildFile ("modular-window.png"));
         Theme::apply (Themes::light); refreshLookAndFeel();
         snapshot (md, outDir.getChildFile ("modular-light.png"));
         Theme::apply (Themes::dark); refreshLookAndFeel();
@@ -2091,6 +2105,7 @@ int run (te::Engine& engine, const juce::File& outDir)
         warm.clear();
         process (od, warm, { { 0, on (48) }, { 0, on (55) }, { 0, on (64) } });
         snapshot (od, outDir.getChildFile ("organic.png"));
+        snapshotWindow (od, outDir.getChildFile ("organic-window.png"));
         Theme::apply (Themes::light); refreshLookAndFeel();
         snapshot (od, outDir.getChildFile ("organic-light.png"));
         Theme::apply (Themes::dark); refreshLookAndFeel();
@@ -2342,6 +2357,7 @@ int run (te::Engine& engine, const juce::File& outDir)
         warm.clear();
         process (hz, warm, { { 0, on (50) }, { 0, on (57) }, { 0, on (64) } });
         snapshot (hz, outDir.getChildFile ("haze.png"));
+        snapshotWindow (hz, outDir.getChildFile ("haze-window.png"));
         Theme::apply (Themes::light); refreshLookAndFeel();
         snapshot (hz, outDir.getChildFile ("haze-light.png"));
         Theme::apply (Themes::dark); refreshLookAndFeel();
@@ -2351,23 +2367,57 @@ int run (te::Engine& engine, const juce::File& outDir)
     //==============================================================================
     r.log << "Device windows (responsive)\n";
     {
-        // Opened in a narrow window, the long devices wrap into rows, cut between sections
+        // The instruments have a layout of their own for their window (they used to show the chain
+        // panel, wrapped into rows). It fills the window, and at the size it opens at, and when the
+        // window is made bigger or somewhat smaller, every control is inside it and has some size.
         juce::String report;
         bool ok = true;
-        for (auto type : { MonoDevice::xmlTypeName, PolyDevice::xmlTypeName, HazeDevice::xmlTypeName, OrganicDevice::xmlTypeName, ModularDevice::xmlTypeName })
+        for (auto type : { MonoDevice::xmlTypeName, PolyDevice::xmlTypeName, HazeDevice::xmlTypeName, OrganicDevice::xmlTypeName,
+                           ModularDevice::xmlTypeName, DrumsDevice::xmlTypeName })
         {
             auto p = DeviceRegistry::create (*edit, type);
             keepAlive.push_back (p);
             auto& d = *dynamic_cast<ElsewhereDevice*> (p.get());
             d.initialise ({ te::TimePosition(), sr, block });
+            const auto name = d.getName().fromFirstOccurrenceOf ("Elsewhere ", false, false);
+            const auto open = d.getWindowViewSize();
             auto editor = d.createEditor();
-            editor->setSize (720, 600);
-            int rows = 0, widest = 0, bottom = 0;
-            for (auto* c : editor->getChildren())
-                if (c->isVisible()) { ++rows; widest = juce::jmax (widest, c->getWidth()); bottom = juce::jmax (bottom, c->getBottom()); }
-            ok = ok && rows >= 2 && widest <= 720 - 16;
-            report << d.getName().fromFirstOccurrenceOf ("Elsewhere ", false, false) << " " << rows << " rows (widest " << widest << ")  ";
-            editor->setSize (720, bottom + 8);
+
+            // One panel (no rows), at the size the device asks for, which fits a laptop screen
+            juce::Component* view = editor->getNumChildComponents() == 1 ? editor->getChildComponent (0) : nullptr;
+            bool good = view != nullptr && open.x >= 600 && open.x <= 1280 && open.y >= 400 && open.y <= 740
+                          && editor->getWidth() == open.x + 16 && editor->getHeight() == open.y + 16;
+
+            // Everything showing, in the panel's coordinates (scrolling areas count as one thing)
+            std::function<void (juce::Component&, juce::String&)> inside = [&] (juce::Component& c, juce::String& stray)
+            {
+                for (auto* ch : c.getChildren())
+                {
+                    if (! ch->isVisible()) continue;
+                    const auto b = view->getLocalArea (ch, ch->getLocalBounds());
+                    if (b.getWidth() < 8 || b.getHeight() < 8 || ! view->getLocalBounds().expanded (1).contains (b))
+                        stray << " " << (ch->getTitle().isNotEmpty() ? ch->getTitle() : juce::String (typeid (*ch).name())) << " " << b.toString();
+                    if (dynamic_cast<juce::Viewport*> (ch) == nullptr)
+                        inside (*ch, stray);
+                }
+            };
+
+            for (auto size : { juce::Point<int> (open.x + 16, open.y + 16), juce::Point<int> (1500, 900), juce::Point<int> (900, 600) })
+            {
+                if (view == nullptr) break;
+                editor->setSize (size.x, size.y);
+                juce::String stray;
+                inside (*view, stray);
+                const bool fills = view->getBounds() == editor->getLocalBounds().reduced (8);
+                good = good && fills && stray.isEmpty() && view->getNumChildComponents() > 0;
+                if (! fills || stray.isNotEmpty())
+                    report << name << " at " << size.x << "x" << size.y << (fills ? "" : " does not fill the window") << (stray.isEmpty() ? "" : " stray:" + stray) << "  ";
+            }
+
+            ok = ok && good;
+            report << name << " " << open.x << "x" << open.y << (good ? "" : " (bad)") << "  ";
+
+            editor->setSize (720, 560);
             juce::Image img (juce::Image::ARGB, editor->getWidth(), editor->getHeight(), true);
             { juce::Graphics g (img); editor->paintEntireComponent (g, true); }
             auto file = outDir.getChildFile ("window-" + juce::String (type).fromFirstOccurrenceOf ("elsewhere", false, false).toLowerCase() + ".png");
@@ -2376,7 +2426,7 @@ int run (te::Engine& engine, const juce::File& outDir)
             if (auto os = file.createOutputStream()) png.writeImageToStream (img, *os);
             editor.reset();
         }
-        check (r, ok, "720 px windows wrap into rows that fit: " + report.trim());
+        check (r, ok, "instrument windows have their own layout that fills the window with every control inside it: " + report.trim());
     }
 
     //==============================================================================
@@ -2471,6 +2521,7 @@ int run (te::Engine& engine, const juce::File& outDir)
     //==============================================================================
     r.log << "Step Sequencer\n";
     {
+        using S = StepsDevice;
         auto& seq = make<StepsDevice> (*edit, StepsDevice::xmlTypeName);
         auto ons = noteOns (processMidi (seq, 48000, true, {}));
         // Default pattern: steps 1,3,5,7,8 on in the first half bar -> 48, 55, 60, 55, 58
@@ -2490,25 +2541,18 @@ int run (te::Engine& engine, const juce::File& outDir)
         processMidi (seq, 4800, false, {});
         ons = noteOns (processMidi (seq, 24000, false, { { 500, juce::MidiMessage::noteOn (1, 62, (juce::uint8) 100) } }));
         check (r, ons.size() >= 2 && ons[0] == std::pair<int, int> { 500, 62 } && ons[1] == std::pair<int, int> { 12500, 69 },
-               "Follow Keys: transposes to the held key and starts with it: " + describe (ons, 2));
+               "Follow Keys: moves to the held key and starts with it: " + describe (ons, 2));
         ons = noteOns (processMidi (seq, 24000, false, { { 0, juce::MidiMessage::noteOff (1, 62) } }));
         check (r, ons.empty(), "Follow Keys: stops when the key is released");
         setParam (seq.follow, 0.0f);
 
-        // --- Lanes -----------------------------------------------------------------
-        // A plain pattern to measure against: 4 steps of 1/16 (6000 samples), all on, all the root
+        // A plain pattern to measure against: one row, 4 steps of 1/16 (6000 samples), all on, all C2
         auto plain = [&]
         {
+            seq.loadDefaults();
             setParam (seq.length, 4.0f);
-            setParam (seq.gate, 50.0f);
-            setParam (seq.direction, 0.0f);
-            setParam (seq.scale, 0.0f);
-            for (auto& l : seq.laneSteps) setParam (l, 0.0f);
-            for (auto& s : seq.steps)
-            {
-                setParam (s.on, 1.0f); setParam (s.pitch, 0.0f); setParam (s.velocity, 100.0f); setParam (s.length, 100.0f);
-                setParam (s.chance, 100.0f); setParam (s.repeat, 1.0f); setParam (s.nudge, 0.0f); setParam (s.every, 0.0f);
-            }
+            for (int i = 0; i < S::numSteps; ++i) seq.setOn (0, i, true);
+            for (int l = 0; l < S::numLanes; ++l) seq.resetRow (0, l);
             seq.initialise ({ te::TimePosition(), sr, block });
         };
         auto pitches = [] (const std::vector<std::pair<int, int>>& v, size_t count)
@@ -2517,6 +2561,12 @@ int run (te::Engine& engine, const juce::File& outDir)
             for (size_t i = 0; i < juce::jmin (count, v.size()); ++i) p.push_back (v[i].second);
             return p;
         };
+        auto timesOf = [] (const std::vector<std::pair<int, int>>& v, int note)
+        {
+            std::vector<int> t;
+            for (auto& o : v) if (o.second == note) t.push_back (o.first);
+            return t;
+        };
         auto offOf = [] (const std::vector<std::pair<int, juce::MidiMessage>>& events, int after)
         {
             for (auto& [pos, m] : events) if (m.isNoteOff() && pos > after) return pos;
@@ -2524,16 +2574,16 @@ int run (te::Engine& engine, const juce::File& outDir)
         };
 
         plain();
-        for (int i = 0; i < 4; ++i) setParam (seq.steps[(size_t) i].pitch, (float) i);
+        for (int i = 0; i < 4; ++i) seq.setStep (0, S::pitchLane, i, i);
         ons = noteOns (processMidi (seq, 48000, true, {}));
         check (r, pitches (ons, 8) == std::vector<int> { 48, 49, 50, 51, 48, 49, 50, 51 }, "Forward: " + describe (ons, 8));
-        setParam (seq.direction, (float) StepsDevice::backward);
+        setParam (seq.direction, (float) S::backward);
         ons = noteOns (processMidi (seq, 48000, true, {}));
         check (r, pitches (ons, 8) == std::vector<int> { 51, 50, 49, 48, 51, 50, 49, 48 }, "Back: " + describe (ons, 8));
-        setParam (seq.direction, (float) StepsDevice::bounce);
+        setParam (seq.direction, (float) S::bounce);
         ons = noteOns (processMidi (seq, 48000, true, {}));
         check (r, pitches (ons, 8) == std::vector<int> { 48, 49, 50, 51, 50, 49, 48, 49 }, "Bounce: " + describe (ons, 8));
-        setParam (seq.direction, (float) StepsDevice::randomOrder);
+        setParam (seq.direction, (float) S::randomOrder);
         {
             seq.initialise ({ te::TimePosition(), sr, block });
             auto a = pitches (noteOns (processMidi (seq, 192000, true, {})), 32);
@@ -2544,28 +2594,56 @@ int run (te::Engine& engine, const juce::File& outDir)
                    "Random: every step turns up, out of order, and the same way on a second mixdown");
         }
 
-        // A lane with its own number of steps goes round under the pattern
+        // Rows: each its own note and name, each going round in its own number of steps
         plain();
-        for (int i = 0; i < 4; ++i) setParam (seq.steps[(size_t) i].pitch, (float) i);
-        setParam (seq.laneSteps[StepsDevice::pitchLane], 3.0f);
-        ons = noteOns (processMidi (seq, 48000, true, {}));
-        check (r, pitches (ons, 8) == std::vector<int> { 48, 49, 50, 48, 49, 50, 48, 49 }, "3 pitches under 4 steps: " + describe (ons, 8));
-        setParam (seq.steps[1].on, 0.0f);
-        ons = noteOns (processMidi (seq, 48000, true, {}));
-        check (r, pitches (ons, 6) == std::vector<int> { 48, 50, 48, 49, 48, 49 }, "and the pitches keep their place when a step is off: " + describe (ons, 6));
+        {
+            const int second = seq.addRow ("Bell", 72);
+            seq.setRowSteps (second, 3);
+            seq.setOn (second, 0, true);
+            ons = noteOns (processMidi (seq, 72000, true, {}));
+            check (r, second == 1 && seq.getNumRows() == 2 && seq.getRowName (1) == "Bell", "a second row, with a name");
+            check (r, timesOf (ons, 72) == std::vector<int> { 0, 18000, 36000, 54000 } && timesOf (ons, 48).size() == 12,
+                   "a row of 3 steps goes round under a row of 4 (" + juce::String ((int) timesOf (ons, 72).size()) + " and " + juce::String ((int) timesOf (ons, 48).size()) + " notes)");
+
+            seq.setRowMute (second, true);
+            ons = noteOns (processMidi (seq, 72000, true, {}));
+            check (r, timesOf (ons, 72).empty() && timesOf (ons, 48).size() == 12, "a muted row is silent, the others carry on");
+            seq.setRowMute (second, false);
+
+            seq.duplicateRow (second);
+            seq.setRowNote (2, 79);
+            ons = noteOns (processMidi (seq, 24000, true, {}));
+            check (r, seq.getNumRows() == 3 && timesOf (ons, 79) == std::vector<int> { 0, 18000 }, "a duplicated row plays the same steps on its own note");
+            seq.removeRow (2);
+            seq.removeRow (1);
+            check (r, seq.getNumRows() == 1, "rows can be deleted");
+
+            for (int i = 0; i < 12; ++i) seq.addRow ("Row", 60 + i);
+            check (r, seq.getNumRows() == S::maxRows && ! seq.canAddRow(), "no more than " + juce::String (S::maxRows) + " rows");
+        }
+
+        // A drum pattern to start from
+        plain();
+        setParam (seq.length, 16.0f);
+        seq.loadDrumRows();
+        ons = noteOns (processMidi (seq, 96000, true, {}));
+        check (r, seq.getNumRows() == 5 && seq.getRowName (0) == "Kick" && seq.getRowName (3) == "Closed Hat"
+                   && timesOf (ons, 36) == std::vector<int> { 0, 48000 } && timesOf (ons, 37) == std::vector<int> { 24000, 72000 } && timesOf (ons, 39).size() == 8,
+               "Start a Drum Pattern: rows for the first pads of the Drums, kick on 1 and 3, snare on 2 and 4, hats between");
+        snapshot (seq, outDir.getChildFile ("steps-drums.png"));
 
         // Scale: pitches move down to the nearest note of it
         plain();
-        for (int i = 0; i < 4; ++i) setParam (seq.steps[(size_t) i].pitch, (float) (i + 1));   // +1 +2 +3 +4
+        for (int i = 0; i < 4; ++i) seq.setStep (0, S::pitchLane, i, i + 1);   // +1 +2 +3 +4
         setParam (seq.scale, 2.0f);   // Minor
         ons = noteOns (processMidi (seq, 24000, true, {}));
         check (r, pitches (ons, 4) == std::vector<int> { 48, 50, 51, 51 }, "Scale Minor keeps to the scale: " + describe (ons, 4));
-        check (r, StepsDevice::snapToScale (-1, 1) == -1 && StepsDevice::snapToScale (-2, 1) == -3 && StepsDevice::snapToScale (13, 1) == 12,
+        check (r, S::snapToScale (-1, 1) == -1 && S::snapToScale (-2, 1) == -3 && S::snapToScale (13, 1) == 12,
                "and works below the root and above the octave");
 
         // Repeat: several notes inside one step
         plain();
-        setParam (seq.steps[1].repeat, 3.0f);
+        seq.setStep (0, S::repeatLane, 1, 3);
         {
             auto events = processMidi (seq, 24000, true, {});
             ons = noteOns (events);
@@ -2576,9 +2654,9 @@ int run (te::Engine& engine, const juce::File& outDir)
 
         // Length: longer than the step, the note runs into the next one (a slide on a synth with glide)
         plain();
-        setParam (seq.steps[0].length, 50.0f);
-        setParam (seq.steps[1].length, 300.0f);
-        setParam (seq.steps[2].pitch, 5.0f);
+        seq.setStep (0, S::lengthLane, 0, 50);
+        seq.setStep (0, S::lengthLane, 1, 300);
+        seq.setStep (0, S::pitchLane, 2, 5);
         {
             auto events = processMidi (seq, 24000, true, {});
             int firstOff = -1, secondOff = -1;
@@ -2590,15 +2668,15 @@ int run (te::Engine& engine, const juce::File& outDir)
 
         // Nudge: earlier or later than the grid
         plain();
-        setParam (seq.steps[1].nudge, 25.0f);
-        setParam (seq.steps[2].nudge, -25.0f);
+        seq.setStep (0, S::nudgeLane, 1, 25);
+        seq.setStep (0, S::nudgeLane, 2, -25);
         ons = noteOns (processMidi (seq, 24000, true, {}));
         check (r, ons.size() == 4 && ons[1].first == 7500 && ons[2].first == 10500 && ons[3].first == 18000, "Nudge moves a step late or early: " + describe (ons, 4));
 
-        // Every: only on some trips round the pattern
+        // Every: only on some trips round
         plain();
-        setParam (seq.steps[1].every, 2.0f);    // 2nd of 2
-        setParam (seq.steps[2].every, 6.0f);    // 1st of 4
+        seq.setStep (0, S::everyLane, 1, 2);    // 2nd of 2
+        seq.setStep (0, S::everyLane, 2, 6);    // 1st of 4
         ons = noteOns (processMidi (seq, 4 * 24000, true, {}));
         {
             std::vector<int> at;
@@ -2609,10 +2687,10 @@ int run (te::Engine& engine, const juce::File& outDir)
         // Chance
         plain();
         setParam (seq.length, 1.0f);
-        setParam (seq.steps[0].chance, 0.0f);
+        seq.setStep (0, S::chanceLane, 0, 0);
         ons = noteOns (processMidi (seq, 96000, true, {}));
         check (r, ons.empty(), "Chance 0 % never plays");
-        setParam (seq.steps[0].chance, 50.0f);
+        seq.setStep (0, S::chanceLane, 0, 50);
         {
             seq.initialise ({ te::TimePosition(), sr, block });
             auto a = noteOns (processMidi (seq, 6000 * 400, true, {}));
@@ -2629,7 +2707,7 @@ int run (te::Engine& engine, const juce::File& outDir)
         // 32 steps
         plain();
         setParam (seq.length, 32.0f);
-        setParam (seq.steps[31].pitch, 7.0f);
+        seq.setStep (0, S::pitchLane, 31, 7);
         ons = noteOns (processMidi (seq, 6000 * 33, true, {}));
         check (r, ons.size() == 33 && ons[31].second == 55 && ons[32].second == 48, "32 steps: the last one plays, then it starts over");
 
@@ -2637,10 +2715,16 @@ int run (te::Engine& engine, const juce::File& outDir)
         plain();
         setParam (seq.length, 16.0f);
         setParam (seq.swing, 60.0f);
-        for (int l = 0; l < StepsDevice::numLanes; ++l) seq.randomiseLane (l);
-        seq.randomiseSteps();
-        setParam (seq.laneSteps[StepsDevice::lengthLane], 5.0f);
-        setParam (seq.laneSteps[StepsDevice::repeatLane], 7.0f);
+        seq.addRow ("Two", 55);
+        seq.addRow ("Three", 62);
+        seq.setRowSteps (1, 5);
+        seq.setRowSteps (2, 7);
+        for (int row = 0; row < 3; ++row)
+        {
+            for (int l = 0; l < S::numLanes; ++l) seq.randomiseRow (row, l);
+            seq.randomiseRowSteps (row);
+            seq.setOn (row, 0, true);
+        }
         {
             std::map<int, int> open;
             bool ordered = true;
@@ -2657,47 +2741,65 @@ int run (te::Engine& engine, const juce::File& outDir)
                 if (m.isNoteOff()) --open[m.getNoteNumber()];
             bool balanced = true;
             for (auto& [n, c] : open) balanced = balanced && c == 0;
-            check (r, balanced && ordered && noteOns (events).size() > 20, "a busy random pattern: every note ends, nothing out of order (" + juce::String ((int) noteOns (events).size()) + " notes)");
+            check (r, balanced && ordered && noteOns (events).size() > 20, "three busy random rows: every note ends, nothing out of order (" + juce::String ((int) noteOns (events).size()) + " notes)");
         }
         setParam (seq.swing, 0.0f);
+        snapshot (seq, outDir.getChildFile ("steps-rows.png"));
+        snapshotWindow (seq, outDir.getChildFile ("steps-window.png"));
 
         // Tools
         plain();
-        for (int i = 0; i < 4; ++i) setParam (seq.steps[(size_t) i].pitch, (float) i);
-        seq.shift (1);
+        for (int i = 0; i < 4; ++i) seq.setStep (0, S::pitchLane, i, i);
+        seq.shiftPattern (1);
         ons = noteOns (processMidi (seq, 24000, true, {}));
         check (r, pitches (ons, 4) == std::vector<int> { 51, 48, 49, 50 }, "Shift Right: " + describe (ons, 4));
-        seq.shift (-1);
+        seq.shiftPattern (-1);
         seq.doubleLength();
-        setParam (seq.steps[7].pitch, 12.0f);
+        seq.setStep (0, S::pitchLane, 7, 12);
         ons = noteOns (processMidi (seq, 48000, true, {}));
         check (r, pitches (ons, 8) == std::vector<int> { 48, 49, 50, 51, 48, 49, 50, 60 }, "Double: a copy to change (" + describe (ons, 8) + ")");
 
-        // An old project (16 steps, three values a step) loads and plays as it did
+        // Undo puts a step back
+        plain();
+        seq.beginEdit ("Draw Steps");
+        seq.setOn (0, 2, false);
+        const bool wasOff = ! seq.getPattern().rows[0].on[2];
+        edit->getUndoManager().undo();
+        check (r, wasOff && seq.getPattern().rows[0].on[2], "a step drawn or rubbed out can be undone");
+
+        // An old project (one line of steps, kept as parameters) loads and plays as it did
         {
             juce::ValueTree old (te::IDs::PLUGIN);
             old.setProperty (te::IDs::type, StepsDevice::xmlTypeName, nullptr);
             old.setProperty ("length", 8.0f, nullptr);
             old.setProperty ("s2on", 1.0f, nullptr);
             old.setProperty ("s2pitch", 3.0f, nullptr);
+            old.setProperty ("s3rep", 2.0f, nullptr);
             auto p = edit->getPluginCache().createNewPlugin (old);
             keepAlive.push_back (p);
             auto& loaded = *dynamic_cast<StepsDevice*> (p.get());
             loaded.initialise ({ te::TimePosition(), sr, block });
             ons = noteOns (processMidi (loaded, 96000, true, {}));
-            check (r, ons.size() >= 7 && ons[1] == std::pair<int, int> { 6000, 51 } && ons[6] == std::pair<int, int> { 48000, 48 },
-                   "a pattern saved before the new lanes plays as it did: " + describe (ons, 7));
+            check (r, loaded.getNumRows() == 1 && ons.size() >= 8 && ons[1] == std::pair<int, int> { 6000, 51 } && ons[2] == std::pair<int, int> { 12000, 55 }
+                       && ons[3] == std::pair<int, int> { 15000, 55 } && ons[7] == std::pair<int, int> { 48000, 48 },
+                   "a pattern saved before there were rows plays as it did, as one row: " + describe (ons, 8));
+
+            // ... and rows are saved with the project and come back
+            loaded.addRow ("Top", 84);
+            loaded.setOn (1, 0, true);
+            auto saved = loaded.state.createCopy();
+            auto q = edit->getPluginCache().createNewPlugin (saved);
+            keepAlive.push_back (q);
+            auto& reopened = *dynamic_cast<StepsDevice*> (q.get());
+            check (r, reopened.getNumRows() == 2 && reopened.getRowName (1) == "Top" && reopened.getPattern().rows[1].on[0] && reopened.getPattern().rows[1].note == 84,
+                   "rows are saved with the project and come back");
         }
 
-        // Pictures: the default, then a longer pattern on another lane
+        // Picture: the pattern a new sequencer starts with
         plain();
         seq.loadDefaults();
         processMidi (seq, 4800, true, {});
         snapshot (seq, outDir.getChildFile ("steps.png"));
-        setParam (seq.length, 24.0f);
-        for (int l = 0; l < StepsDevice::numLanes; ++l) seq.randomiseLane (l);
-        snapshot (seq, outDir.getChildFile ("steps-32.png"));
-        snapshotWindow (seq, outDir.getChildFile ("steps-window.png"));
     }
 
     //==============================================================================
@@ -2988,10 +3090,10 @@ int run (te::Engine& engine, const juce::File& outDir)
 
         auto& seq = *dynamic_cast<StepsDevice*> (seqP.get());
         auto& ec = *dynamic_cast<EchoDevice*> (echoP.get());
-        for (int l = 0; l < StepsDevice::numLanes; ++l) seq.randomiseLane (l);
-        setParam (seq.steps[0].chance, 100.0f);
-        setParam (seq.steps[3].chance, 50.0f);
-        setParam (seq.steps[5].repeat, 3.0f);
+        for (int l = 0; l < StepsDevice::numLanes; ++l) seq.randomiseRow (0, l);
+        seq.setStep (0, StepsDevice::chanceLane, 0, 100);
+        seq.setStep (0, StepsDevice::chanceLane, 3, 50);
+        seq.setStep (0, StepsDevice::repeatLane, 5, 3);
         setParam (ec.wear, 80.0f);
         setParam (ec.wow, 60.0f);
         setParam (ec.noise, 20.0f);
