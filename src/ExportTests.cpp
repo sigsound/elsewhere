@@ -270,6 +270,115 @@ int run (te::Engine& engine, const juce::File& outDir)
         log.text << "  SKIP  MP3 (LAME isn't installed)\n";
     }
 
+    // The AI training notice: in each format, the file carries it and still plays exactly as rendered
+    {
+        auto contains = [] (const juce::File& f, const juce::String& text)
+        {
+            juce::MemoryBlock m;
+            f.loadFileAsData (m);
+            auto needle = text.toStdString();
+            return std::string (static_cast<const char*> (m.getData()), m.getSize()).find (needle) != std::string::npos;
+        };
+
+        auto sameAudio = [] (const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b)
+        {
+            if (a.getNumSamples() == 0 || a.getNumChannels() != b.getNumChannels() || a.getNumSamples() != b.getNumSamples())
+                return false;
+
+            for (int ch = 0; ch < a.getNumChannels(); ++ch)
+                if (std::memcmp (a.getReadPointer (ch), b.getReadPointer (ch), sizeof (float) * (size_t) a.getNumSamples()) != 0)
+                    return false;
+
+            return true;
+        };
+
+        s.what = Export::What::mixAndStems;
+        s.loudness = Export::Loudness::off;
+        s.reserveRights = true;
+        s.sampleRate = 44100.0;
+
+        std::vector<te::RenderFormat> formats { te::RenderFormat::wav, te::RenderFormat::aiff, te::RenderFormat::flac, te::RenderFormat::ogg };
+
+        if (Export::canWriteMp3 (engine))
+            formats.push_back (te::RenderFormat::mp3);
+
+        for (auto format : formats)
+        {
+            s.format = format;
+            s.bitDepth = 24;
+
+            if (auto q = Export::qualityChoices (format); ! q.empty())
+                s.quality = q.front().value;
+
+            auto marked = Export::plan (edit, s, exports, "Marked " + Export::formatName (format));
+            auto name = Export::formatName (format);
+            log.check (marked.notice.has_value() && Export::describe (marked, s, p.getFolder()).contains ("not licensed for AI training"),
+                       name + ": the export plans the notice and says so");
+            render (edit, marked);
+
+            bool allMarked = true, allSame = true, allOpen = true;
+            juce::String why;
+
+            for (auto& job : marked.jobs)
+            {
+                auto f = job.params.destFile;
+                auto before = readAll (f);
+
+                if (auto problem = Export::finishFile (marked, f); problem.isNotEmpty())
+                {
+                    allMarked = false;
+                    why << f.getFileName() << ": " << problem << "; ";
+                    continue;
+                }
+
+                allOpen = allOpen && open (f) != nullptr;
+                auto after = readAll (f);
+
+                // MP3 can't be read back here without its decoder, so the tag's shape is checked instead
+                if (format == te::RenderFormat::mp3 && after.getNumSamples() == 0)
+                {
+                    juce::MemoryBlock m;
+                    f.loadFileAsData (m);
+                    allSame = allSame && m.getSize() > 10 && std::memcmp (m.getData(), "ID3\x03", 4) == 0;
+                }
+                else
+                {
+                    allSame = allSame && sameAudio (before, after);
+                }
+
+                bool has = format == te::RenderFormat::flac || format == te::RenderFormat::ogg
+                             ? contains (f, "TDM_RESERVATION=1") && contains (f, "COMMENT=Not licensed for AI training")
+                             : contains (f, "DMI-PROHIBITED-AIMLTRAINING") && contains (f, "<tdm:reservation>1</tdm:reservation>");
+                allMarked = allMarked && has;
+                if (! has) why << f.getFileName() << " has no notice; ";
+            }
+
+            log.check (allMarked, name + ": the mix and " + juce::String (marked.numStems) + " stems carry the notice" + (why.isEmpty() ? juce::String() : " (" + why + ")"));
+            log.check (allSame, name + ": and play exactly as rendered");
+
+            if (format != te::RenderFormat::mp3)
+                log.check (allOpen, name + ": and still open");
+
+            if (format == te::RenderFormat::wav)
+                if (auto r = open (marked.mixFile))
+                    log.check (r->metadataValues["ICOP"].contains ("All rights reserved") && r->metadataValues["ICMT"].startsWith ("Not licensed for AI training"),
+                               "WAV: the copyright and comment show in its INFO chunk (" + r->metadataValues["ICOP"] + ")");
+
+            if (format == te::RenderFormat::ogg)
+                if (auto r = open (marked.mixFile))
+                    log.check (r->metadataValues[juce::OggVorbisAudioFormat::id3comment].startsWith ("Not licensed for AI training"),
+                               "Ogg: the comment shows to a Vorbis reader");
+        }
+
+        // Turned off, nothing is added
+        s.reserveRights = false;
+        s.format = te::RenderFormat::wav;
+        auto plain = Export::plan (edit, s, exports, "Plain");
+        log.check (! plain.notice.has_value() && Export::finishFile (plain, plain.mixFile).isEmpty()
+                     && ! Export::describe (plain, s, p.getFolder()).contains ("AI training"),
+                   "with No notice, nothing is added");
+    }
+
     std::cout << "Export tests\n" << log.text << (log.failures == 0 ? "All passed\n" : juce::String (log.failures) + " failed\n");
     return log.failures;
 }

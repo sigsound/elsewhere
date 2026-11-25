@@ -7,6 +7,7 @@
 #include "Theme.h"
 #include "Mixing.h"
 #include "Routing.h"
+#include "RightsNotice.h"
 
 namespace elsewhere
 {
@@ -40,6 +41,7 @@ namespace Export
         bool dither = true;             // for 16- and 24-bit
         Loudness loudness = Loudness::off;
         bool tails = true;
+        bool reserveRights = true;      // the AI training notice (RightsNotice), in every file
         bool chosen = false;            // until the first export, the sample rate follows the interface
 
         bool hasBitDepth() const    { return format == te::RenderFormat::wav || format == te::RenderFormat::aiff || format == te::RenderFormat::flac; }
@@ -178,7 +180,14 @@ namespace Export
         juce::File mixFile;
         int numStems = 0;
         juce::StringArray problems;
+        std::optional<RightsNotice::Notice> notice;     // written into each file once it's rendered
     };
+
+    /** What happens to a file once it's rendered: the notice goes in. Returns why it couldn't. */
+    inline juce::String finishFile (const Plan& p, const juce::File& f)
+    {
+        return p.notice.has_value() ? RightsNotice::write (f, *p.notice) : juce::String();
+    }
 
     /** Plans an export into `exportsFolder` (the project's Exports folder), named after the project. */
     inline Plan plan (te::Edit& edit, const Settings& s, const juce::File& exportsFolder, const juce::String& name)
@@ -213,6 +222,9 @@ namespace Export
                 p.jobs.push_back (std::move (*job));
             }
         };
+
+        if (s.reserveRights)
+            p.notice = RightsNotice::Notice { edit.getEditMetadata().artist };
 
         // Stems go in a folder of their own, with the mix beside them
         p.folder = stems ? exportsFolder.getNonexistentChildFile (name + " Stems", {}, false) : exportsFolder;
@@ -288,6 +300,10 @@ namespace Export
                                                     : juce::String (s.loudness == Loudness::streaming ? -14 : s.loudness == Loudness::apple ? -16 : -23)
                                                         + " LUFS, peaks under -1 dBTP")
                  << (s.what == What::mixAndStems ? "; stems keep their level." : ".");
+
+        if (s.reserveRights)
+            text << (s.what == What::mix ? "\nMarked as not licensed for AI training in its metadata. The sound is unchanged."
+                                         : "\nEach file is marked as not licensed for AI training in its metadata. The sound is unchanged.");
 
         if (! p.problems.isEmpty())
             text << "\n" << p.problems.joinIntoString ("\n");
@@ -365,7 +381,14 @@ namespace Export
             tails.setToggleState (settings.tails, juce::dontSendNotification);
             tails.onClick = [this] { settings.tails = tails.getToggleState(); update(); };
 
-            for (auto* c : std::initializer_list<juce::Component*> { &what, &range, &format, &depth, &rate, &loudness, &dither, &tails })
+            aiTraining.addItem ("Reserve rights", 1);
+            aiTraining.addItem ("No notice", 2);
+            aiTraining.setTooltip ("Writes a notice into each file's metadata that it isn't licensed for AI training, in forms both people "
+                                   "and software can read. It doesn't change the sound, and it can't stop anyone who ignores it.");
+            aiTraining.setSelectedId (settings.reserveRights ? 1 : 2, juce::dontSendNotification);
+            aiTraining.onChange = [this] { settings.reserveRights = aiTraining.getSelectedId() == 1; update(); };
+
+            for (auto* c : std::initializer_list<juce::Component*> { &what, &range, &format, &depth, &rate, &loudness, &aiTraining, &dither, &tails })
                 addAndMakeVisible (c);
 
             preview.setJustificationType (juce::Justification::topLeft);
@@ -373,7 +396,7 @@ namespace Export
             preview.setColour (juce::Label::textColourId, Colours::textDim);
             addAndMakeVisible (preview);
 
-            setSize (480, 6 * rowH + 30 + 92);
+            setSize (480, 7 * rowH + 30 + 108);
             updateDepth();
             update();
         }
@@ -387,7 +410,7 @@ namespace Export
             g.setFont (juce::FontOptions (13.0f));
             int y = 0;
 
-            for (auto* label : { "Export", "Range", "Format", settings.hasBitDepth() ? "Bit depth" : "Quality", "Sample rate", "Loudness" })
+            for (auto* label : { "Export", "Range", "Format", settings.hasBitDepth() ? "Bit depth" : "Quality", "Sample rate", "Loudness", "AI training" })
             {
                 g.drawText (label, 0, y, labelW - 10, rowH - 6, juce::Justification::centredRight);
                 y += rowH;
@@ -398,7 +421,7 @@ namespace Export
         {
             auto r = getLocalBounds();
 
-            for (auto* c : std::initializer_list<juce::Component*> { &what, &range, &format, &depth, &rate, &loudness })
+            for (auto* c : std::initializer_list<juce::Component*> { &what, &range, &format, &depth, &rate, &loudness, &aiTraining })
                 c->setBounds (r.removeFromTop (rowH).withTrimmedLeft (labelW).withTrimmedBottom (6));
 
             auto toggles = r.removeFromTop (30).withTrimmedLeft (labelW - 4);
@@ -413,7 +436,7 @@ namespace Export
         Settings settings;
         juce::File exportsFolder, projectFolder;
         juce::String name;
-        juce::ComboBox what, range, format, depth, rate, loudness;
+        juce::ComboBox what, range, format, depth, rate, loudness, aiTraining;
         juce::ToggleButton dither, tails;
         juce::Label preview;
 
@@ -472,13 +495,17 @@ namespace Export
             {
                 if (job.getState() == te::RenderQueue::Job::State::failed)
                     failures.add (job.getName() + ": " + job.getError());
+                else if (job.getState() == te::RenderQueue::Job::State::completed)
+                    if (auto problem = finishFile (planned, job.getFile()); problem.isNotEmpty())
+                        unmarked.add (job.getFile().getFileName() + ": " + problem);
             };
             queue.onFinished = [this] { finished(); };
             queue.start();
             startTimerHz (15);
         }
 
-        std::function<void (juce::String)> onDone;     // given a summary when something went wrong, empty otherwise
+        /** Given a title and a summary when something went wrong, both empty otherwise. */
+        std::function<void (juce::String, juce::String)> onDone;
 
         void cancel()   { cancelled = true; queue.cancelAll(); }
 
@@ -496,7 +523,7 @@ namespace Export
         juce::Label label;
         double progress = 0.0;
         juce::ProgressBar bar { progress };
-        juce::StringArray failures;
+        juce::StringArray failures, unmarked;
         int total = 0;
         bool cancelled = false;
 
@@ -509,8 +536,16 @@ namespace Export
             if (! cancelled && failures.isEmpty())
                 (planned.mixFile.existsAsFile() && planned.numStems == 0 ? planned.mixFile : planned.folder).revealToUser();
 
-            if (onDone)
-                onDone (cancelled ? juce::String() : failures.joinIntoString ("\n"));
+            if (! onDone)
+                return;
+
+            if (cancelled || (failures.isEmpty() && unmarked.isEmpty()))
+                onDone ({}, {});
+            else if (! failures.isEmpty())
+                onDone ("Some files weren't exported", failures.joinIntoString ("\n")
+                            + (unmarked.isEmpty() ? juce::String() : "\n\nThese were exported without the AI training notice:\n" + unmarked.joinIntoString ("\n")));
+            else
+                onDone ("Exported without the AI training notice", "The audio is fine, but the notice couldn't be added to:\n" + unmarked.joinIntoString ("\n"));
         }
     };
 
@@ -554,13 +589,13 @@ namespace Export
             pw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
 
             juce::Component::SafePointer<juce::AlertWindow> safe (pw);
-            progress->onDone = [safe] (juce::String problems)
+            progress->onDone = [safe] (juce::String title, juce::String problems)
             {
                 if (safe != nullptr)
                     safe->exitModalState (1);
 
                 if (problems.isNotEmpty())
-                    juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Some files weren't exported", problems);
+                    juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, title, problems);
             };
 
             pw->enterModalState (true, juce::ModalCallbackFunction::create ([progress] (int r)
