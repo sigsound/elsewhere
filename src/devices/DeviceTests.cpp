@@ -13,6 +13,7 @@
 #include "OrganicDevice.h"
 #include "HazeDevice.h"
 #include "MidiEffects.h"
+#include "EchoDevice.h"
 #include "../Modulators.h"
 #include "../SessionRecorder.h"
 #include "../drums/DrumTrack.h"
@@ -24,6 +25,7 @@
 #include "../AudioEditor.h"
 #include <tracktion_engine/testing/tracktion_EnginePlayer.h>
 #include "DeviceTests.h"
+#include <set>
 
 namespace elsewhere::DeviceTests
 {
@@ -43,7 +45,7 @@ namespace
     void setParam (ElsewhereDevice::Param p, float v)     { p.param().setParameter (v, juce::sendNotification); }
 
     /** Runs a buffer through a device in blocks (with optional MIDI at the first sample). */
-    void process (te::Plugin& p, juce::AudioBuffer<float>& buf, std::vector<std::pair<int, juce::MidiMessage>> midi = {})
+    void process (te::Plugin& p, juce::AudioBuffer<float>& buf, std::vector<std::pair<int, juce::MidiMessage>> midi = {}, double startSeconds = 0.0)
     {
         for (int start = 0; start < buf.getNumSamples(); start += block)
         {
@@ -55,7 +57,7 @@ namespace
                     mma.addMidiMessage (m, (pos - start) / sr, te::createUniqueMPESourceID());
 
             te::PluginRenderContext rc (&buf, start, n, &mma, 0.0,
-                                        te::TimeRange (te::TimePosition::fromSeconds (start / sr), te::TimePosition::fromSeconds ((start + n) / sr)),
+                                        te::TimeRange (te::TimePosition::fromSeconds (startSeconds + start / sr), te::TimePosition::fromSeconds (startSeconds + (start + n) / sr)),
                                         true, false, true, false);
             p.applyToBuffer (rc);
         }
@@ -63,7 +65,8 @@ namespace
 
     /** Runs MIDI through a MIDI effect; returns (absolute sample, message) for everything it outputs. */
     std::vector<std::pair<int, juce::MidiMessage>> processMidi (te::Plugin& p, int numSamples, bool playing,
-                                                                 std::vector<std::pair<int, juce::MidiMessage>> midi, int startSample = 0)
+                                                                 std::vector<std::pair<int, juce::MidiMessage>> midi, int startSample = 0,
+                                                                 bool mixingDown = true)
     {
         std::vector<std::pair<int, juce::MidiMessage>> result;
         juce::AudioBuffer<float> buf (2, block);
@@ -80,7 +83,7 @@ namespace
             auto t0 = (startSample + start) / sr;
             te::PluginRenderContext rc (&buf, 0, n, &mma, 0.0,
                                         te::TimeRange (te::TimePosition::fromSeconds (t0), te::TimePosition::fromSeconds (t0 + n / sr)),
-                                        playing, false, true, false);
+                                        playing, false, mixingDown, false);
             p.applyToBuffer (rc);
 
             for (auto& m : mma)
@@ -2468,8 +2471,524 @@ int run (te::Engine& engine, const juce::File& outDir)
         ons = noteOns (processMidi (seq, 24000, false, { { 0, juce::MidiMessage::noteOff (1, 62) } }));
         check (r, ons.empty(), "Follow Keys: stops when the key is released");
         setParam (seq.follow, 0.0f);
+
+        // --- Lanes -----------------------------------------------------------------
+        // A plain pattern to measure against: 4 steps of 1/16 (6000 samples), all on, all the root
+        auto plain = [&]
+        {
+            setParam (seq.length, 4.0f);
+            setParam (seq.gate, 50.0f);
+            setParam (seq.direction, 0.0f);
+            setParam (seq.scale, 0.0f);
+            for (auto& l : seq.laneSteps) setParam (l, 0.0f);
+            for (auto& s : seq.steps)
+            {
+                setParam (s.on, 1.0f); setParam (s.pitch, 0.0f); setParam (s.velocity, 100.0f); setParam (s.length, 100.0f);
+                setParam (s.chance, 100.0f); setParam (s.repeat, 1.0f); setParam (s.nudge, 0.0f); setParam (s.every, 0.0f);
+            }
+            seq.initialise ({ te::TimePosition(), sr, block });
+        };
+        auto pitches = [] (const std::vector<std::pair<int, int>>& v, size_t count)
+        {
+            std::vector<int> p;
+            for (size_t i = 0; i < juce::jmin (count, v.size()); ++i) p.push_back (v[i].second);
+            return p;
+        };
+        auto offOf = [] (const std::vector<std::pair<int, juce::MidiMessage>>& events, int after)
+        {
+            for (auto& [pos, m] : events) if (m.isNoteOff() && pos > after) return pos;
+            return -1;
+        };
+
+        plain();
+        for (int i = 0; i < 4; ++i) setParam (seq.steps[(size_t) i].pitch, (float) i);
+        ons = noteOns (processMidi (seq, 48000, true, {}));
+        check (r, pitches (ons, 8) == std::vector<int> { 48, 49, 50, 51, 48, 49, 50, 51 }, "Forward: " + describe (ons, 8));
+        setParam (seq.direction, (float) StepsDevice::backward);
+        ons = noteOns (processMidi (seq, 48000, true, {}));
+        check (r, pitches (ons, 8) == std::vector<int> { 51, 50, 49, 48, 51, 50, 49, 48 }, "Back: " + describe (ons, 8));
+        setParam (seq.direction, (float) StepsDevice::bounce);
+        ons = noteOns (processMidi (seq, 48000, true, {}));
+        check (r, pitches (ons, 8) == std::vector<int> { 48, 49, 50, 51, 50, 49, 48, 49 }, "Bounce: " + describe (ons, 8));
+        setParam (seq.direction, (float) StepsDevice::randomOrder);
+        {
+            seq.initialise ({ te::TimePosition(), sr, block });
+            auto a = pitches (noteOns (processMidi (seq, 192000, true, {})), 32);
+            seq.initialise ({ te::TimePosition(), sr, block });
+            auto again = pitches (noteOns (processMidi (seq, 192000, true, {})), 32);
+            std::set<int> seen (a.begin(), a.end());
+            check (r, a.size() == 32 && seen.size() == 4 && a != std::vector<int> (a.size(), a[0]) && a == again,
+                   "Random: every step turns up, out of order, and the same way on a second mixdown");
+        }
+
+        // A lane with its own number of steps goes round under the pattern
+        plain();
+        for (int i = 0; i < 4; ++i) setParam (seq.steps[(size_t) i].pitch, (float) i);
+        setParam (seq.laneSteps[StepsDevice::pitchLane], 3.0f);
+        ons = noteOns (processMidi (seq, 48000, true, {}));
+        check (r, pitches (ons, 8) == std::vector<int> { 48, 49, 50, 48, 49, 50, 48, 49 }, "3 pitches under 4 steps: " + describe (ons, 8));
+        setParam (seq.steps[1].on, 0.0f);
+        ons = noteOns (processMidi (seq, 48000, true, {}));
+        check (r, pitches (ons, 6) == std::vector<int> { 48, 50, 48, 49, 48, 49 }, "and the pitches keep their place when a step is off: " + describe (ons, 6));
+
+        // Scale: pitches move down to the nearest note of it
+        plain();
+        for (int i = 0; i < 4; ++i) setParam (seq.steps[(size_t) i].pitch, (float) (i + 1));   // +1 +2 +3 +4
+        setParam (seq.scale, 2.0f);   // Minor
+        ons = noteOns (processMidi (seq, 24000, true, {}));
+        check (r, pitches (ons, 4) == std::vector<int> { 48, 50, 51, 51 }, "Scale Minor keeps to the scale: " + describe (ons, 4));
+        check (r, StepsDevice::snapToScale (-1, 1) == -1 && StepsDevice::snapToScale (-2, 1) == -3 && StepsDevice::snapToScale (13, 1) == 12,
+               "and works below the root and above the octave");
+
+        // Repeat: several notes inside one step
+        plain();
+        setParam (seq.steps[1].repeat, 3.0f);
+        {
+            auto events = processMidi (seq, 24000, true, {});
+            ons = noteOns (events);
+            const bool ok3 = ons.size() == 6 && ons[1].first == 6000 && ons[2].first == 8000 && ons[3].first == 10000 && ons[4].first == 12000;
+            check (r, ok3, "Repeat 3x plays three notes in the step: " + describe (ons, 6));
+            check (r, std::abs (offOf (events, 6000) - 7000) <= 1, "each as long as the Gate allows (" + juce::String (offOf (events, 6000) - 6000) + " samples)");
+        }
+
+        // Length: longer than the step, the note runs into the next one (a slide on a synth with glide)
+        plain();
+        setParam (seq.steps[0].length, 50.0f);
+        setParam (seq.steps[1].length, 300.0f);
+        setParam (seq.steps[2].pitch, 5.0f);
+        {
+            auto events = processMidi (seq, 24000, true, {});
+            int firstOff = -1, secondOff = -1;
+            for (auto& [pos, m] : events)
+                if (m.isNoteOff() && m.getNoteNumber() == 48) { if (firstOff < 0) firstOff = pos; else if (secondOff < 0) secondOff = pos; }
+            check (r, std::abs (firstOff - 1500) <= 1, "Length 50 % halves the note (" + juce::String (firstOff) + ")");
+            check (r, std::abs (secondOff - 15000) <= 1, "Length 300 % holds it over the next step (" + juce::String (secondOff) + ", next note at 12000)");
+        }
+
+        // Nudge: earlier or later than the grid
+        plain();
+        setParam (seq.steps[1].nudge, 25.0f);
+        setParam (seq.steps[2].nudge, -25.0f);
+        ons = noteOns (processMidi (seq, 24000, true, {}));
+        check (r, ons.size() == 4 && ons[1].first == 7500 && ons[2].first == 10500 && ons[3].first == 18000, "Nudge moves a step late or early: " + describe (ons, 4));
+
+        // Every: only on some trips round the pattern
+        plain();
+        setParam (seq.steps[1].every, 2.0f);    // 2nd of 2
+        setParam (seq.steps[2].every, 6.0f);    // 1st of 4
+        ons = noteOns (processMidi (seq, 4 * 24000, true, {}));
+        {
+            std::vector<int> at;
+            for (auto& o : ons) at.push_back (o.first / 6000);
+            check (r, at == std::vector<int> { 0, 2, 3,  4, 5, 7,  8, 11,  12, 13, 15 }, "Every: 2nd of 2 and 1st of 4 (" + juce::String ((int) at.size()) + " notes in 4 trips)");
+        }
+
+        // Chance
+        plain();
+        setParam (seq.length, 1.0f);
+        setParam (seq.steps[0].chance, 0.0f);
+        ons = noteOns (processMidi (seq, 96000, true, {}));
+        check (r, ons.empty(), "Chance 0 % never plays");
+        setParam (seq.steps[0].chance, 50.0f);
+        {
+            seq.initialise ({ te::TimePosition(), sr, block });
+            auto a = noteOns (processMidi (seq, 6000 * 400, true, {}));
+            seq.initialise ({ te::TimePosition(), sr, block });
+            auto again = noteOns (processMidi (seq, 6000 * 400, true, {}));
+            check (r, a.size() > 160 && a.size() < 240, "Chance 50 % plays about half the time (" + juce::String ((int) a.size()) + " of 400)");
+            check (r, a == again, "and a mixdown comes out the same twice");
+            // Playing live, each time a loop goes round the dice fall differently
+            auto live = noteOns (processMidi (seq, 6000 * 400, true, {}, 0, false));
+            auto liveAgain = noteOns (processMidi (seq, 6000 * 400, true, {}, 0, false));
+            check (r, live != liveAgain, "but playing live, each time round a loop is different");
+        }
+
+        // 32 steps
+        plain();
+        setParam (seq.length, 32.0f);
+        setParam (seq.steps[31].pitch, 7.0f);
+        ons = noteOns (processMidi (seq, 6000 * 33, true, {}));
+        check (r, ons.size() == 33 && ons[31].second == 55 && ons[32].second == 48, "32 steps: the last one plays, then it starts over");
+
+        // Everything at once, with swing: no note left hanging
+        plain();
+        setParam (seq.length, 16.0f);
+        setParam (seq.swing, 60.0f);
+        for (int l = 0; l < StepsDevice::numLanes; ++l) seq.randomiseLane (l);
+        seq.randomiseSteps();
+        setParam (seq.laneSteps[StepsDevice::lengthLane], 5.0f);
+        setParam (seq.laneSteps[StepsDevice::repeatLane], 7.0f);
+        {
+            std::map<int, int> open;
+            bool ordered = true;
+            int last = 0;
+            auto events = processMidi (seq, 480000, true, {});
+            for (auto& [pos, m] : events)
+            {
+                if (m.isNoteOn()) ++open[m.getNoteNumber()];
+                if (m.isNoteOff()) --open[m.getNoteNumber()];
+                ordered = ordered && pos >= last;
+                last = pos;
+            }
+            for (auto& [pos, m] : processMidi (seq, 48000, false, {}))
+                if (m.isNoteOff()) --open[m.getNoteNumber()];
+            bool balanced = true;
+            for (auto& [n, c] : open) balanced = balanced && c == 0;
+            check (r, balanced && ordered && noteOns (events).size() > 20, "a busy random pattern: every note ends, nothing out of order (" + juce::String ((int) noteOns (events).size()) + " notes)");
+        }
+        setParam (seq.swing, 0.0f);
+
+        // Tools
+        plain();
+        for (int i = 0; i < 4; ++i) setParam (seq.steps[(size_t) i].pitch, (float) i);
+        seq.shift (1);
+        ons = noteOns (processMidi (seq, 24000, true, {}));
+        check (r, pitches (ons, 4) == std::vector<int> { 51, 48, 49, 50 }, "Shift Right: " + describe (ons, 4));
+        seq.shift (-1);
+        seq.doubleLength();
+        setParam (seq.steps[7].pitch, 12.0f);
+        ons = noteOns (processMidi (seq, 48000, true, {}));
+        check (r, pitches (ons, 8) == std::vector<int> { 48, 49, 50, 51, 48, 49, 50, 60 }, "Double: a copy to change (" + describe (ons, 8) + ")");
+
+        // An old project (16 steps, three values a step) loads and plays as it did
+        {
+            juce::ValueTree old (te::IDs::PLUGIN);
+            old.setProperty (te::IDs::type, StepsDevice::xmlTypeName, nullptr);
+            old.setProperty ("length", 8.0f, nullptr);
+            old.setProperty ("s2on", 1.0f, nullptr);
+            old.setProperty ("s2pitch", 3.0f, nullptr);
+            auto p = edit->getPluginCache().createNewPlugin (old);
+            keepAlive.push_back (p);
+            auto& loaded = *dynamic_cast<StepsDevice*> (p.get());
+            loaded.initialise ({ te::TimePosition(), sr, block });
+            ons = noteOns (processMidi (loaded, 96000, true, {}));
+            check (r, ons.size() >= 7 && ons[1] == std::pair<int, int> { 6000, 51 } && ons[6] == std::pair<int, int> { 48000, 48 },
+                   "a pattern saved before the new lanes plays as it did: " + describe (ons, 7));
+        }
+
+        // Pictures: the default, then a longer pattern on another lane
+        plain();
+        seq.loadDefaults();
         processMidi (seq, 4800, true, {});
         snapshot (seq, outDir.getChildFile ("steps.png"));
+        setParam (seq.length, 24.0f);
+        for (int l = 0; l < StepsDevice::numLanes; ++l) seq.randomiseLane (l);
+        snapshot (seq, outDir.getChildFile ("steps-32.png"));
+    }
+
+    //==============================================================================
+    r.log << "Tape Echo\n";
+    {
+        auto& ec = make<EchoDevice> (*edit, EchoDevice::xmlTypeName);
+
+        // A machine in perfect order: only Head 1, one repeat, nothing but the echo
+        auto fresh = [&] (double rateToUse = sr)
+        {
+            for (auto p : { ec.wow, ec.flutter, ec.wear, ec.noise, ec.drive, ec.spread, ec.intensity, ec.dry, ec.sync, ec.bass, ec.treble })
+                setParam (p, 0.0f);
+            setParam (ec.echo, 100.0f);
+            setParam (ec.time, 200.0f);
+            setParam (ec.heads[0], 1.0f); setParam (ec.heads[1], 0.0f); setParam (ec.heads[2], 0.0f);
+            ec.initialise ({ te::TimePosition(), rateToUse, block });
+        };
+
+        // Short clicks (1 ms) at the given times
+        auto clicks = [] (double seconds, std::vector<double> at, double rateToUse = sr)
+        {
+            juce::AudioBuffer<float> b (2, (int) (seconds * rateToUse));
+            b.clear();
+            const int w = (int) (rateToUse * 0.001);
+            for (auto t : at)
+                for (int i = 0; i < w; ++i)
+                {
+                    const int pos = (int) (t * rateToUse) + i;
+                    if (pos >= b.getNumSamples()) break;
+                    const auto v = 0.5f * (float) (0.5 - 0.5 * std::cos (juce::MathConstants<double>::twoPi * i / w));
+                    b.setSample (0, pos, v); b.setSample (1, pos, v);
+                }
+            return b;
+        };
+
+        auto peakIn = [] (const juce::AudioBuffer<float>& b, int ch, double from, double to, double rateToUse = sr)
+        {
+            std::pair<int, float> best { -1, 0.0f };
+            for (int i = (int) (from * rateToUse); i < juce::jmin (b.getNumSamples(), (int) (to * rateToUse)); ++i)
+                if (std::abs (b.getSample (ch, i)) > best.second)
+                    best = { i, std::abs (b.getSample (ch, i)) };
+            return best;
+        };
+
+        fresh();
+        auto b = clicks (1.0, { 0.0 });
+        process (ec, b);
+        auto first = peakIn (b, 0, 0.0, 1.0);
+        check (r, std::abs (first.first - (9600 + 24)) <= 48, "Head 1 plays the sound back after the Repeat Rate (200 ms): " + juce::String (first.first / sr * 1000.0, 1) + " ms");
+        check (r, peakIn (b, 0, 0.0, 0.15).second < 1.0e-4f, "Dry off: nothing but the echo");
+        check (r, first.second > 0.1f && first.second < 0.6f, "the echo comes back at a sensible level (" + juce::String (first.second, 3) + " from 0.5)");
+
+        for (int h = 1; h < 3; ++h)
+        {
+            fresh();
+            setParam (ec.heads[0], 0.0f);
+            setParam (ec.heads[(size_t) h], 1.0f);
+            ec.initialise ({ te::TimePosition(), sr, block });
+            b = clicks (1.0, { 0.0 });
+            process (ec, b);
+            const auto pk = peakIn (b, 0, 0.0, 1.0);
+            check (r, std::abs (pk.first - (9600 * (h + 1) + 24)) <= 48,
+                   "Head " + juce::String (h + 1) + " is " + juce::String (h + 1) + " times as far along the tape: " + juce::String (pk.first / sr * 1000.0, 1) + " ms");
+        }
+
+        fresh();
+        setParam (ec.intensity, 50.0f);
+        b = clicks (1.5, { 0.0 });
+        process (ec, b);
+        {
+            const float p1 = peakIn (b, 0, 0.15, 0.25).second, p2 = peakIn (b, 0, 0.35, 0.45).second, p3 = peakIn (b, 0, 0.55, 0.65).second;
+            check (r, p2 < p1 * 0.9f && p2 > p1 * 0.2f && p3 < p2 * 0.9f && p3 > p2 * 0.2f,
+                   "Intensity feeds the echo back, each repeat quieter: " + juce::String (p1, 3) + " " + juce::String (p2, 3) + " " + juce::String (p3, 3));
+        }
+
+        // Each repeat has been through the tape once more, so it has less treble
+        {
+            fresh();
+            setParam (ec.intensity, 60.0f);
+            auto tone = sine (6000.0, 0.2f, 1.2);
+            tone.applyGain ((int) (0.1 * sr), tone.getNumSamples() - (int) (0.1 * sr), 0.0f);
+            process (ec, tone);
+            const float hi1 = tone.getRMSLevel (0, (int) (0.22 * sr), (int) (0.06 * sr)), hi2 = tone.getRMSLevel (0, (int) (0.42 * sr), (int) (0.06 * sr));
+            fresh();
+            setParam (ec.intensity, 60.0f);
+            tone = sine (300.0, 0.2f, 1.2);
+            tone.applyGain ((int) (0.1 * sr), tone.getNumSamples() - (int) (0.1 * sr), 0.0f);
+            process (ec, tone);
+            const float lo1 = tone.getRMSLevel (0, (int) (0.22 * sr), (int) (0.06 * sr)), lo2 = tone.getRMSLevel (0, (int) (0.42 * sr), (int) (0.06 * sr));
+            check (r, hi2 / hi1 < lo2 / lo1 * 0.8f, "repeats lose treble as they go round (6 kHz falls to " + juce::String (hi2 / hi1, 2) + ", 300 Hz to " + juce::String (lo2 / lo1, 2) + ")");
+        }
+
+        // Turning Repeat Rate changes the tape speed, so what is on the tape bends in pitch
+        {
+            fresh();
+            setParam (ec.time, 100.0f);
+            ec.initialise ({ te::TimePosition(), sr, block });
+            auto a = sine (1000.0, 0.2f, 1.0);
+            process (ec, a);
+            const double before = yinPitch (a, (int) (0.6 * sr));
+            setParam (ec.time, 200.0f);
+            auto glide = sine (1000.0, 0.2f, 3.0);
+            process (ec, glide, {}, 1.0);   // (carrying on from where the first second ended)
+            const double during = yinPitch (glide, (int) (0.05 * sr)), after = yinPitch (glide, (int) (2.5 * sr));
+            check (r, std::abs (before - 1000.0) < 3.0 && during < 950.0 && std::abs (after - 1000.0) < 3.0,
+                   "slowing the tape drops the pitch of the echo, then it settles: " + juce::String (before, 1) + " -> " + juce::String (during, 1) + " -> " + juce::String (after, 1) + " Hz");
+        }
+
+        // Wow: the pitch of a steady note wavers
+        {
+            auto wander = [&] (float amount)
+            {
+                fresh();
+                setParam (ec.wow, amount);
+                auto tone = sine (1000.0, 0.2f, 6.0);
+                process (ec, tone);
+                double lo = 1.0e9, hi = 0.0;
+                for (double t = 0.5; t < 5.8; t += 0.1)
+                {
+                    const double f = yinPitch (tone, (int) (t * sr), 2048);
+                    lo = juce::jmin (lo, f); hi = juce::jmax (hi, f);
+                }
+                return hi - lo;
+            };
+            const double still = wander (0.0f), moving = wander (100.0f);
+            check (r, still < 1.0 && moving > 4.0 && moving < 60.0, "Wow wavers the pitch (1 kHz moves by " + juce::String (moving, 1) + " Hz; " + juce::String (still, 2) + " Hz with it off)");
+        }
+
+        // Wear: the same sound comes back different every time
+        {
+            auto unevenness = [&] (float amount)
+            {
+                fresh();
+                setParam (ec.wear, amount);
+                std::vector<double> at;
+                for (int i = 0; i < 60; ++i) at.push_back (0.3 * i);
+                auto train = clicks (18.3, at);
+                process (ec, train);
+                float lo = 10.0f, hi = 0.0f;
+                for (int i = 0; i < 60; ++i)
+                {
+                    const float p = peakIn (train, 0, 0.3 * i + 0.17, 0.3 * i + 0.25).second;
+                    lo = juce::jmin (lo, p); hi = juce::jmax (hi, p);
+                }
+                return std::pair<float, float> { lo, hi };
+            };
+            const auto good = unevenness (0.0f), worn = unevenness (100.0f);
+            check (r, good.first > good.second * 0.98f, "a machine in good order repeats every sound alike (" + juce::String (good.first, 3) + " to " + juce::String (good.second, 3) + ")");
+            check (r, worn.first < worn.second * 0.75f, "a worn one doesn't: 60 identical sounds come back between " + juce::String (worn.first, 3) + " and " + juce::String (worn.second, 3));
+        }
+
+        // Nothing in, nothing out, however worn (until Noise is turned up)
+        {
+            fresh();
+            for (auto p : { ec.wow, ec.flutter, ec.wear }) setParam (p, 100.0f);
+            setParam (ec.intensity, 100.0f);
+            juce::AudioBuffer<float> quiet (2, (int) (4.0 * sr));
+            quiet.clear();
+            process (ec, quiet);
+            check (r, quiet.getMagnitude (0, quiet.getNumSamples()) < 1.0e-6f, "silence in gives silence out");
+
+            setParam (ec.intensity, 30.0f);
+            setParam (ec.noise, 100.0f);
+            quiet.clear();
+            process (ec, quiet);
+            const float hissDb = tailRmsDb (quiet);
+            check (r, hissDb > -75.0f && hissDb < -35.0f, "Noise adds tape hiss (" + juce::String (hissDb, 1) + " dB)");
+        }
+
+        // Mixed down twice, a worn machine misbehaves in exactly the same way
+        {
+            auto worn = [&]
+            {
+                auto train = clicks (6.0, { 0.0, 0.7, 1.4, 2.1, 2.8, 3.5 });
+                process (ec, train);
+                return train;
+            };
+            fresh();
+            for (auto p : { ec.wow, ec.flutter, ec.wear }) setParam (p, 100.0f);
+            setParam (ec.noise, 40.0f);
+            setParam (ec.intensity, 70.0f);
+            const auto one = worn(), two = worn();
+            bool same = true;
+            for (int ch = 0; same && ch < 2; ++ch)
+                for (int i = 0; same && i < one.getNumSamples(); ++i)
+                    same = one.getSample (ch, i) == two.getSample (ch, i);
+            check (r, same, "two mixdowns of the same thing match sample for sample, wear and noise included");
+        }
+
+        // Intensity all the way up: the machine feeds on itself, and the tape holds it in
+        {
+            fresh();
+            setParam (ec.intensity, 100.0f);
+            setParam (ec.wear, 40.0f);
+            for (auto h : ec.heads) setParam (h, 1.0f);
+            auto run = sine (220.0, 0.5f, 20.0);
+            run.applyGain ((int) (0.5 * sr), run.getNumSamples() - (int) (0.5 * sr), 0.0f);
+            process (ec, run);
+            const float peak = run.getMagnitude (0, run.getNumSamples());
+            const float late = juce::Decibels::gainToDecibels (run.getRMSLevel (0, (int) (18.0 * sr), (int) (2.0 * sr)), -200.0f);
+            check (r, isFinite (run) && peak < 4.0f && late > -30.0f,
+                   "Intensity at 100 %: still going after 20 s (" + juce::String (late, 1) + " dB), never past " + juce::String (peak, 2));
+
+            setParam (ec.intensity, 40.0f);
+            juce::AudioBuffer<float> rest (2, (int) (12.0 * sr));
+            rest.clear();
+            process (ec, rest, {}, 20.0);
+            check (r, tailRmsDb (rest) < -70.0f, "turned back down, it dies away (" + juce::String (tailRmsDb (rest), 1) + " dB)");
+        }
+
+        // In time with the song: 1/8 at 120 bpm is 250 ms
+        fresh();
+        setParam (ec.sync, 3.0f);
+        ec.initialise ({ te::TimePosition(), sr, block });
+        b = clicks (1.0, { 0.0 });
+        process (ec, b);
+        check (r, std::abs (peakIn (b, 0, 0.0, 1.0).first - (12000 + 24)) <= 60, "Sync 1/8 at 120 bpm: " + juce::String (peakIn (b, 0, 0.0, 1.0).first / sr * 1000.0, 1) + " ms");
+
+        // Spread: Head 2 to the left, Head 3 to the right
+        fresh();
+        setParam (ec.spread, 100.0f);
+        setParam (ec.heads[0], 0.0f); setParam (ec.heads[1], 1.0f);
+        ec.initialise ({ te::TimePosition(), sr, block });
+        b = clicks (1.0, { 0.0 });
+        process (ec, b);
+        check (r, peakIn (b, 1, 0.0, 1.0).second < peakIn (b, 0, 0.0, 1.0).second * 0.05f, "Spread puts Head 2 on the left");
+        fresh();
+        setParam (ec.spread, 100.0f);
+        setParam (ec.heads[0], 0.0f); setParam (ec.heads[2], 1.0f);
+        ec.initialise ({ te::TimePosition(), sr, block });
+        b = clicks (1.0, { 0.0 });
+        process (ec, b);
+        check (r, peakIn (b, 0, 0.0, 1.0).second < peakIn (b, 1, 0.0, 1.0).second * 0.05f, "and Head 3 on the right");
+
+        // The same times at another sample rate
+        fresh (96000.0);
+        b = clicks (1.0, { 0.0 }, 96000.0);
+        process (ec, b);
+        check (r, std::abs (peakIn (b, 0, 0.0, 1.0, 96000.0).first - (19200 + 48)) <= 96, "200 ms is 200 ms at 96 kHz too");
+
+        // Dry on: the sound itself passes untouched
+        fresh();
+        setParam (ec.dry, 1.0f);
+        setParam (ec.echo, 0.0f);
+        ec.initialise ({ te::TimePosition(), sr, block });
+        auto through = sine (440.0, 0.5f, 0.5);
+        process (ec, through);
+        check (r, std::abs (tailRmsDb (through) - tailRmsDb (sine (440.0, 0.5f, 0.5))) < 0.01f, "with Echo at 0 the sound passes unchanged");
+
+        for (int i = 0; i < (int) EchoDevice::patches().size(); ++i)
+        {
+            ec.loadPatch (i);
+            ec.initialise ({ te::TimePosition(), sr, block });
+            auto s = sine (220.0, 0.9f, 4.0);
+            s.applyGain ((int) (1.0 * sr), s.getNumSamples() - (int) (1.0 * sr), 0.0f);
+            process (ec, s);
+            check (r, isFinite (s) && s.getMagnitude (0, s.getNumSamples()) < 4.0f, juce::String ("patch ") + EchoDevice::patches()[(size_t) i].name + " is stable");
+        }
+
+        ec.loadPatch (2);
+        snapshot (ec, outDir.getChildFile ("echo.png"));
+    }
+
+    //==============================================================================
+    r.log << "End to end: Step Sequencer -> Synth -> Tape Echo, mixed down by the engine\n";
+    {
+        auto song = te::createEmptyEdit (engine, outDir.getChildFile ("steps-echo.tracktionedit"));
+        song->ensureNumberOfAudioTracks (1);
+        auto track = te::getAudioTracks (*song).getFirst();
+        auto seqP = DeviceRegistry::create (*song, StepsDevice::xmlTypeName);
+        auto synP = DeviceRegistry::create (*song, PolyDevice::xmlTypeName);
+        auto echoP = DeviceRegistry::create (*song, EchoDevice::xmlTypeName);
+        track->pluginList.insertPlugin (echoP, 0, nullptr);
+        track->pluginList.insertPlugin (synP, 0, nullptr);
+        track->pluginList.insertPlugin (seqP, 0, nullptr);
+
+        auto& seq = *dynamic_cast<StepsDevice*> (seqP.get());
+        auto& ec = *dynamic_cast<EchoDevice*> (echoP.get());
+        for (int l = 0; l < StepsDevice::numLanes; ++l) seq.randomiseLane (l);
+        setParam (seq.steps[0].chance, 100.0f);
+        setParam (seq.steps[3].chance, 50.0f);
+        setParam (seq.steps[5].repeat, 3.0f);
+        setParam (ec.wear, 80.0f);
+        setParam (ec.wow, 60.0f);
+        setParam (ec.noise, 20.0f);
+        setParam (ec.intensity, 60.0f);
+
+        juce::BigInteger tracks;
+        tracks.setBit (track->getIndexInEditTrackList());
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+
+        auto mixdown = [&] (const juce::String& name)
+        {
+            auto out = outDir.getChildFile (name);
+            out.deleteFile();
+            te::Renderer::renderToFile ("Test", out, *song, te::TimeRange (te::TimePosition(), te::TimePosition::fromSeconds (6.0)), tracks, true, false, {}, true);
+            juce::AudioBuffer<float> b;
+            if (std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (out)); reader != nullptr)
+            {
+                b.setSize (2, (int) reader->lengthInSamples);
+                reader->read (&b, 0, b.getNumSamples(), 0, true, true);
+            }
+            return b;
+        };
+
+        const auto one = mixdown ("steps-echo.wav");
+        check (r, one.getNumSamples() > 0 && isFinite (one) && one.getRMSLevel (0, 0, one.getNumSamples()) > 0.003f, "the pattern plays the synth through the echo");
+
+        echoP->setEnabled (false);
+        const auto without = mixdown ("steps-no-echo.wav");
+        bool differs = false;
+        for (int i = 0; ! differs && i < juce::jmin (one.getNumSamples(), without.getNumSamples()); ++i)
+            differs = std::abs (one.getSample (0, i) - without.getSample (0, i)) > 1.0e-3f;
+        check (r, differs, "and the echo is what makes the difference");
     }
 
     //==============================================================================
