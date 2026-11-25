@@ -67,6 +67,8 @@ public:
     juce::String getSelectableDescription() override   { return "Elsewhere Master"; }
     int getDeviceViewWidth() const override            { return 860; }
     std::unique_ptr<juce::Component> createDeviceView() override;
+    std::unique_ptr<juce::Component> createWindowView() override;
+    juce::Point<int> getWindowViewSize() const override    { return { 1000, 580 }; }
 
     double getLatencySeconds() override                 { return limiter.getLatencySamples() / rate; }
 
@@ -500,6 +502,19 @@ public:
         g.setColour (Colours::gridBar);
         g.drawHorizontalLine ((int) dbToY (0.0f), r.getX(), r.getRight());
 
+        if (showScale)
+        {
+            for (int db = -6; db <= 6; db += 3)
+            {
+                if (db == 0) continue;
+                g.setColour (Colours::gridLine);
+                g.drawHorizontalLine ((int) dbToY ((float) db), r.getX(), r.getRight());
+                g.setColour (Colours::textDim);
+                g.drawText ((db > 0 ? "+" : "") + juce::String (db), juce::Rectangle<float> (r.getRight() - 30.0f, dbToY ((float) db) - 13.0f, 26.0f, 12.0f),
+                            juce::Justification::centredRight);
+            }
+        }
+
         // Analysis: measured balance (dots) against the target (line)
         if (dev.hasAnalysis)
         {
@@ -551,6 +566,8 @@ public:
             g.drawText (juce::String::fromUTF8 ("\xe2\x80\x94 target   "), getLocalBounds().reduced (6, 3).withTrimmedRight (58), juce::Justification::topRight);
         }
     }
+
+    bool showScale = false;     // dB lines and numbers, when there is room for them
 
     void mouseMove (const juce::MouseEvent& e) override     { auto h = find (e.position); if (h != hovered) { hovered = h; repaint(); } }
     void mouseExit (const juce::MouseEvent&) override       { hovered = -1; repaint(); }
@@ -617,8 +634,9 @@ private:
 class MasterView : public juce::Component, private juce::Timer
 {
 public:
-    MasterView (MasterDevice& d)
-        : dev (d), graph (d),
+    /** `inWindow`: the roomier layout for the device's own window. */
+    MasterView (MasterDevice& d, bool inWindow = false)
+        : dev (d), window (inWindow), graph (d),
           characterChoice (d.character.param(), MasterDevice::characterNames(), Colours::solo),
           gainKnob (d.inputGain.param(), "Gain", Colours::solo), targetKnob (d.target.param(), "Loudness", Colours::solo),
           eqKnob (d.eqAmount.param(), "EQ Amount"), widthKnob (d.width.param()), ceilingKnob (d.ceiling.param()),
@@ -652,12 +670,25 @@ public:
             addAndMakeVisible (c);
 
         message = "Put Elsewhere Master last on the Master track. Click Analyze and play your song to have it set loudness and tone.";
+        graph.showScale = window;
         refresh();
         startTimerHz (15);
     }
 
     void paint (juce::Graphics& g) override
     {
+        if (window)
+        {
+            DeviceUI::paintSection (g, analyzeArea, "Analyze");
+            DeviceUI::paintSection (g, levelArea, "Level");
+            DeviceUI::paintSection (g, toneArea, "Tone");
+            DeviceUI::paintSection (g, stereoArea, "Stereo");
+
+            // (a switch that is off is the colour of the panel it sits on, so it gets an edge)
+            g.setColour (Colours::textDim.withAlpha (0.3f));
+            g.drawRoundedRectangle (monoBass.getBounds().toFloat().reduced (0.5f), 3.5f, 1.0f);
+        }
+
         // Assistant message
         g.setColour (dev.isAnalyzing() ? Colours::solo : Colours::textDim);
         g.setFont (juce::FontOptions (11.0f));
@@ -681,6 +712,13 @@ public:
         // Meters
         auto m = meterArea;
         DeviceUI::paintSection (g, m, "Output");
+
+        if (window)
+        {
+            paintWindowMeters (g, m.reduced (12, 0).withTrimmedTop (24).withTrimmedBottom (10));
+            return;
+        }
+
         m.removeFromTop (16);
         m.reduce (8, 2);
 
@@ -709,6 +747,12 @@ public:
 
     void resized() override
     {
+        if (window)
+        {
+            layoutWindow();
+            return;
+        }
+
         auto r = getLocalBounds();
         auto left = r.removeFromLeft (170);
         analyzeButton.setBounds (left.removeFromTop (34));
@@ -738,6 +782,8 @@ public:
 
 private:
     MasterDevice& dev;
+    const bool window;
+    juce::Rectangle<int> analyzeArea, levelArea, toneArea, stereoArea;
     MasterGraph graph;
     DeviceUI::Choice characterChoice;
     DeviceUI::Knob gainKnob, targetKnob, eqKnob, widthKnob, ceilingKnob;
@@ -746,6 +792,110 @@ private:
     juce::String message;
     juce::Rectangle<int> messageArea, meterArea;
     float momentary = -120.0f, shortTerm = -120.0f, integrated = -120.0f, peakShown = 0.0f, limiterShown = 0.0f, compShown = 0.0f;
+
+    /** Tonal balance and the output meters across the top, the controls in groups underneath. */
+    void layoutWindow()
+    {
+        auto r = getLocalBounds();
+        auto lower = r.removeFromBottom (juce::jmin (150, r.getHeight() / 2));
+        r.removeFromBottom (8);
+
+        meterArea = r.removeFromRight (juce::jlimit (260, 340, r.getWidth() * 3 / 10));
+        resetButton.setBounds (meterArea.getRight() - 58, meterArea.getY() + 4, 52, 18);
+        r.removeFromRight (8);
+        graph.setBounds (r);
+
+        const int gap = 8;
+        analyzeArea = lower.removeFromLeft (juce::jlimit (230, 300, lower.getWidth() * 3 / 10));
+        lower.removeFromLeft (gap);
+        const int unit = (lower.getWidth() - 2 * gap) / 8;
+        levelArea = lower.removeFromLeft (unit * 3);    lower.removeFromLeft (gap);
+        toneArea = lower.removeFromLeft (unit * 3);     lower.removeFromLeft (gap);
+        stereoArea = lower;
+
+        auto inside = [] (juce::Rectangle<int> area)   { return area.reduced (8).withTrimmedTop (12); };
+        auto knobRow = [] (juce::Rectangle<int> area)  { return area.withSizeKeepingCentre (area.getWidth(), juce::jmin (100, area.getHeight())); };
+
+        auto a = inside (analyzeArea);
+        analyzeButton.setBounds (a.removeFromTop (30));
+        a.removeFromTop (6);
+        messageArea = a;
+
+        auto l = knobRow (inside (levelArea));
+        const int lw = l.getWidth() / 3;
+        gainKnob.setBounds (l.removeFromLeft (lw));
+        targetKnob.setBounds (l.removeFromLeft (lw));
+        ceilingKnob.setBounds (l);
+
+        auto t = inside (toneArea);
+        eqKnob.setBounds (knobRow (t.removeFromRight (juce::jmin (90, t.getWidth() / 3))));
+        t.removeFromRight (6);
+        characterChoice.setBounds (t.withSizeKeepingCentre (t.getWidth(), 26));
+
+        auto s = inside (stereoArea);
+        widthKnob.setBounds (knobRow (s.removeFromLeft (s.getWidth() / 2)));
+        monoBass.setBounds (s.withSizeKeepingCentre (juce::jmin (84, s.getWidth() - 4), 24));
+    }
+
+    /** Loudness as a big number and bars against the target; under them what the limiter and
+        the glue compressor are taking off. */
+    void paintWindowMeters (juce::Graphics& g, juce::Rectangle<int> m)
+    {
+        auto fmt = [] (float v) { return v <= -99.0f ? juce::String ("--") : juce::String (v, 1); };
+        const float target = dev.target.get();
+        const bool close = integrated > -99.0f && std::abs (integrated - target) < 1.0f;
+
+        auto head = m.removeFromTop (juce::jmin (64, m.getHeight() / 4));
+        g.setColour (close ? Colours::meterGreen : Colours::text);
+        g.setFont (juce::FontOptions (juce::jmin (40.0f, (float) head.getHeight() * 0.7f), juce::Font::bold));
+        g.drawText (fmt (integrated), head, juce::Justification::centredLeft);
+        g.setColour (Colours::textDim);
+        g.setFont (juce::FontOptions (11.0f));
+        g.drawText ("LUFS integrated", head.withTrimmedBottom (head.getHeight() / 2), juce::Justification::centredRight);
+        g.drawText ("Target " + juce::String (target, 1), head.withTrimmedTop (head.getHeight() / 2), juce::Justification::centredRight);
+
+        const int rowH = juce::jmin (44, m.getHeight() / 6);
+        const int spare = (m.getHeight() - rowH * 6) / 6;
+
+        // One meter: its name and value over a bar. `mark` is a line on the bar (a negative one is not drawn).
+        auto bar = [&] (const juce::String& label, const juce::String& value, float amount, float mark, juce::Colour colour)
+        {
+            m.removeFromTop (spare);
+            auto row = m.removeFromTop (rowH);
+            auto text = row.removeFromTop (juce::jmin (16, rowH / 2));
+            g.setColour (Colours::textDim);
+            g.setFont (juce::FontOptions (11.0f));
+            g.drawText (label, text, juce::Justification::centredLeft);
+            g.setColour (Colours::text);
+            g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+            g.drawText (value, text, juce::Justification::centredRight);
+
+            auto track = row.withSizeKeepingCentre (row.getWidth(), juce::jmin (10, row.getHeight() - 2)).toFloat();
+            g.setColour (Colours::display);
+            g.fillRoundedRectangle (track, 2.0f);
+            g.setColour (colour);
+            g.fillRoundedRectangle (track.withWidth (track.getWidth() * juce::jlimit (0.0f, 1.0f, amount)), 2.0f);
+
+            if (mark >= 0.0f)
+            {
+                g.setColour (Colours::text);
+                g.fillRect (track.getX() + track.getWidth() * juce::jlimit (0.0f, 1.0f, mark) - 0.5f, track.getY() - 2.0f, 1.0f, track.getHeight() + 4.0f);
+            }
+        };
+
+        // Loudness bars run from -36 LUFS to 0, level and reduction bars over their own ranges
+        auto loud = [] (float lufs)    { return (lufs + 36.0f) / 36.0f; };
+        const float peakDb = peakShown < 0.00001f ? -100.0f : juce::Decibels::gainToDecibels (peakShown);
+        const bool over = peakShown > juce::Decibels::decibelsToGain (dev.ceiling.get() + 0.05f);
+
+        bar ("Integrated", fmt (integrated), loud (integrated), loud (target), close ? Colours::meterGreen : Colours::accent);
+        bar ("Short-term", fmt (shortTerm), loud (shortTerm), loud (target), Colours::accent);
+        bar ("Momentary", fmt (momentary), loud (momentary), loud (target), Colours::accent);
+        bar ("Peak", peakDb <= -99.0f ? juce::String ("--") : juce::String (peakDb, 1) + " dB", (peakDb + 36.0f) / 36.0f,
+             (dev.ceiling.get() + 36.0f) / 36.0f, over ? Colours::meterRed : Colours::meterGreen);
+        bar ("Limiting", juce::String (limiterShown, 1) + " dB", -limiterShown / 12.0f, -1.0f, limiterShown < -6.0f ? Colours::meterYellow : Colours::solo);
+        bar ("Glue", juce::String (compShown, 1) + " dB", -compShown / 12.0f, -1.0f, Colours::solo);
+    }
 
     void refresh()
     {
@@ -764,5 +914,6 @@ private:
 };
 
 inline std::unique_ptr<juce::Component> MasterDevice::createDeviceView()    { return std::make_unique<MasterView> (*this); }
+inline std::unique_ptr<juce::Component> MasterDevice::createWindowView()    { return std::make_unique<MasterView> (*this, true); }
 
 } // namespace elsewhere

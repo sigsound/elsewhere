@@ -66,6 +66,8 @@ public:
     juce::String getSelectableDescription() override   { return "Elsewhere Reverb"; }
     int getDeviceViewWidth() const override            { return 900; }
     std::unique_ptr<juce::Component> createDeviceView() override;
+    std::unique_ptr<juce::Component> createWindowView() override;
+    juce::Point<int> getWindowViewSize() const override    { return { 1040, 620 }; }
 
     double getTailLength() const override               { return decay.get() * juce::jmax (1.0f, lowDecay.get()) * 1.5 + 0.3; }
     bool noTail() override                              { return false; }
@@ -552,7 +554,8 @@ private:
 class ReverbSpace : public juce::Component, private juce::Timer
 {
 public:
-    ReverbSpace (ReverbDevice& d) : rev (d)
+    /** `inWindow`: drawn large, so the dots and the decay curve grow with the space given. */
+    ReverbSpace (ReverbDevice& d, bool inWindow = false) : rev (d), roomy (inWindow)
     {
         lastParams = readParams();
         startTimerHz (45);
@@ -590,7 +593,7 @@ public:
 
         // Dots: a faint grid inside the space; lit dots where the sound is
         const float spacing = gridSpacing;
-        const float baseR = 0.9f;
+        const float baseR = 0.1f * spacing;
         for (size_t i = 0; i < cells.size(); ++i)
         {
             const auto& c = cells[i];
@@ -693,6 +696,7 @@ private:
     struct Cell { juce::Point<float> pos; bool inside = false; };
 
     ReverbDevice& rev;
+    const bool roomy;
     std::vector<Particle> particles;
     std::vector<Pending> pending;
     std::vector<Cell> cells;
@@ -745,7 +749,7 @@ private:
     juce::Rectangle<float> curveArea() const
     {
         auto r = getLocalBounds().toFloat().reduced (10.0f, 6.0f);
-        return r.removeFromBottom (juce::jmin (30.0f, r.getHeight() * 0.22f));
+        return r.removeFromBottom (juce::jmin (roomy ? 84.0f : 30.0f, r.getHeight() * 0.22f));
     }
 
     /** The largest possible room: everything above the decay curve, edge to edge. */
@@ -819,7 +823,8 @@ private:
     void layoutGrid()
     {
         auto f = fieldArea();
-        gridSpacing = 9.0f;
+        // (a bigger picture gets bigger dots, not a great many more of them)
+        gridSpacing = roomy ? juce::jlimit (9.0f, 20.0f, f.getHeight() / 22.0f) : 9.0f;
         gridCols = juce::jmax (1, (int) (f.getWidth() / gridSpacing));
         gridRows = juce::jmax (1, (int) (f.getHeight() / gridSpacing));
         gridOrigin = { f.getCentreX() - (float) (gridCols - 1) * gridSpacing * 0.5f, f.getCentreY() - (float) (gridRows - 1) * gridSpacing * 0.5f };
@@ -1285,6 +1290,99 @@ private:
     }
 };
 
+//==============================================================================
+/** The reverb in its own window: the space takes the left, with the choice of space over it;
+    the controls are on the right, grouped by what they shape. */
+class ReverbWindowView : public juce::Component
+{
+public:
+    ReverbWindowView (ReverbDevice& d)
+        : spaceView (d, true),
+          spaceChoice (d.space.param(), ReverbDevice::spaceNames(), Colours::clips[5]),
+          syncButton (d.sync.param(), "Sync", ReverbDevice::syncNames()),
+          shimmerButton (d.shimmerInterval.param(), "Shimmer", ReverbDevice::shimmerNames()),
+          freeze (d.freeze.param(), "Freeze", Colours::solo),
+          size (d.size.param()), decay (d.decay.param()), predelay (d.predelay.param()), diffusion (d.diffusion.param()),
+          early (d.early.param()), width (d.width.param()), mix (d.mix.param(), {}, Colours::solo),
+          lowDecay (d.lowDecay.param(), "Low Decay", Colours::accent), highDecay (d.highDecay.param(), "High Decay", Colours::solo),
+          damping (d.damping.param(), "High Freq", Colours::solo), lowCut (d.lowCut.param()), highCut (d.highCut.param()),
+          motion (d.modDepth.param(), {}, Colours::clips[5]), shimmer (d.shimmer.param(), {}, Colours::clips[6]),
+          duck (d.duck.param(), {}, Colours::accent)
+    {
+        for (auto* c : std::initializer_list<juce::Component*> { &spaceView, &spaceChoice, &syncButton, &shimmerButton, &freeze,
+                                                                 &size, &decay, &predelay, &diffusion, &early, &width, &mix,
+                                                                 &lowDecay, &highDecay, &damping, &lowCut, &highCut, &motion, &shimmer, &duck })
+            addAndMakeVisible (c);
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        DeviceUI::paintSection (g, spaceArea, "Space");
+        DeviceUI::paintSection (g, decayArea, "Decay");
+        DeviceUI::paintSection (g, filterArea, "Filter");
+        DeviceUI::paintSection (g, motionArea, "Motion");
+        DeviceUI::paintSection (g, outputArea, "Output");
+
+        // (a switch that is off is the colour of the panel it sits on, so each gets an edge)
+        g.setColour (Colours::textDim.withAlpha (0.3f));
+        for (auto* c : std::initializer_list<juce::Component*> { &freeze, &syncButton, &shimmerButton })
+            g.drawRoundedRectangle (c->getBounds().toFloat().reduced (0.5f), 3.5f, 1.0f);
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds();
+        auto controls = r.removeFromRight (juce::jlimit (360, 440, r.getWidth() * 2 / 5));
+        r.removeFromRight (8);
+
+        spaceChoice.setBounds (r.removeFromTop (28));
+        r.removeFromTop (8);
+        spaceView.setBounds (r);
+
+        // Four rows of four places; a row's switch or menu sits in its title line
+        const int gap = 8;
+        const int rowH = (controls.getHeight() - 3 * gap) / 4;
+        auto nextRow = [&] { auto row = controls.removeFromTop (rowH); controls.removeFromTop (gap); return row; };
+
+        spaceArea = nextRow();
+        decayArea = nextRow();
+        auto third = nextRow();
+        filterArea = third.removeFromLeft ((third.getWidth() - gap) / 2);
+        third.removeFromLeft (gap);
+        motionArea = third;
+        outputArea = controls.withHeight (rowH);
+
+        auto knobs = [] (juce::Rectangle<int> area, std::initializer_list<DeviceUI::Knob*> list, int places)
+        {
+            area = area.reduced (6).withTrimmedTop (22);
+            area = area.withSizeKeepingCentre (area.getWidth(), juce::jmin (96, area.getHeight()));
+            const int w = area.getWidth() / places;
+            for (auto* k : list)
+                k->setBounds (area.removeFromLeft (w));
+        };
+        auto corner = [] (juce::Rectangle<int> area, int w)     { return area.reduced (6, 5).removeFromTop (22).removeFromRight (w); };
+
+        knobs (spaceArea, { &size, &predelay, &diffusion, &early }, 4);
+        syncButton.setBounds (corner (spaceArea, 92));
+        knobs (decayArea, { &decay, &lowDecay, &highDecay, &damping }, 4);
+        freeze.setBounds (corner (decayArea, 70));
+        knobs (filterArea, { &lowCut, &highCut }, 2);
+        knobs (motionArea, { &motion, &shimmer }, 2);
+        shimmerButton.setBounds (corner (motionArea, 100));
+        knobs (outputArea, { &width, &duck, &mix }, 4);
+    }
+
+private:
+    ReverbSpace spaceView;
+    DeviceUI::Choice spaceChoice;
+    ReverbMenuButton syncButton, shimmerButton;
+    DeviceUI::Toggle freeze;
+    DeviceUI::Knob size, decay, predelay, diffusion, early, width, mix;
+    DeviceUI::Knob lowDecay, highDecay, damping, lowCut, highCut, motion, shimmer, duck;
+    juce::Rectangle<int> spaceArea, decayArea, filterArea, motionArea, outputArea;
+};
+
 inline std::unique_ptr<juce::Component> ReverbDevice::createDeviceView()    { return std::make_unique<ReverbView> (*this); }
+inline std::unique_ptr<juce::Component> ReverbDevice::createWindowView()    { return std::make_unique<ReverbWindowView> (*this); }
 
 } // namespace elsewhere

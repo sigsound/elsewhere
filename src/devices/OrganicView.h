@@ -228,15 +228,16 @@ public:
             }
         }
 
-        // Labels
-        g.setFont (juce::FontOptions (9.5f, juce::Font::bold));
-        auto top = r.reduced (10.0f, 6.0f).removeFromTop (14.0f);
-        auto bottom = r.reduced (10.0f, 6.0f).removeFromBottom (14.0f);
+        // Labels (a little bigger on a big field, in the device's own window)
+        const float s = juce::jlimit (1.0f, 1.3f, r.getHeight() / 160.0f);
+        g.setFont (juce::FontOptions (9.5f * s, juce::Font::bold));
+        auto top = r.reduced (10.0f, 6.0f).removeFromTop (14.0f * s);
+        auto bottom = r.reduced (10.0f, 6.0f).removeFromBottom (14.0f * s);
         for (int k = 0; k < 2; ++k)
         {
             auto area = k == 0 ? top : bottom;
             g.setColour (cols[k]);
-            g.drawText (k == 0 ? "A" : "B", area.removeFromLeft (12.0f), juce::Justification::centredLeft);
+            g.drawText (k == 0 ? "A" : "B", area.removeFromLeft (12.0f * s), juce::Justification::centredLeft);
             g.setColour (Colours::textDim);
             g.drawText (names[(size_t) k] + (missing[(size_t) k] ? juce::String::fromUTF8 ("  \xc2\xb7  NOT INSTALLED") : juce::String()),
                         area, juce::Justification::centredLeft);
@@ -364,9 +365,11 @@ private:
 class OrganicView : public SynthPanel::PanelBase, private juce::Timer
 {
 public:
-    OrganicView (OrganicDevice& d)
-        : dev (d), field (d), sourceA (d, 0, Colours::accent), sourceB (d, 1, Colours::clips[5]), meter (d)
+    /** `inWindow`: the layout for the device's own window (the field across the top, the sections in two rows). */
+    OrganicView (OrganicDevice& d, bool inWindow = false)
+        : dev (d), window (inWindow), field (d), sourceA (d, 0, Colours::accent), sourceB (d, 1, Colours::clips[5]), meter (d)
     {
+        if (window) setWindowRows (2);
         addAndMakeVisible (field);
         addAndMakeVisible (sourceA);
         addAndMakeVisible (sourceB);
@@ -416,14 +419,29 @@ public:
         auto r = getLocalBounds();
         const int gap = 6;
 
-        auto cols = columns (r.withTrimmedLeft (296), { 136, 112, 136, 176, 168, 128, 176 }, gap);
+        juce::Rectangle<int> display, nav;
+        if (window)
+        {
+            // The field across the top, the patch under its corner, then the sections
+            display = r.removeFromTop (juce::jmax (150, r.getHeight() * 34 / 100));
+            r.removeFromTop (6);
+            nav = r.removeFromTop (24).removeFromLeft (300);
+            r.removeFromTop (8);
+        }
+        else
+        {
+            display = r.removeFromLeft (290);
+            nav = display.removeFromBottom (24);
+            display.removeFromBottom (4);
+            r.removeFromLeft (6);
+        }
+
+        auto cols = columns (r, { 136, 112, 136, 176, 168, 128, 176 }, gap);
         aArea = cols[0]; morphArea = cols[1]; bArea = cols[2]; bodyArea = cols[3]; expArea = cols[4]; toneArea = cols[5]; spaceArea = cols[6];
 
-        auto display = r.removeFromLeft (290);
-        auto nav = display.removeFromBottom (24);
-        display.removeFromBottom (4);
         field.setBounds (display);
-        packPanel.setBounds (display.reduced (34, 0).withSizeKeepingCentre (display.getWidth() - 60, 76));
+        packPanel.setBounds (window ? display.withSizeKeepingCentre (230, 76)
+                                    : display.reduced (34, 0).withSizeKeepingCentre (display.getWidth() - 60, 76));
         prevButton.setBounds (nav.removeFromLeft (30)); nav.removeFromLeft (4);
         nextButton.setBounds (nav.removeFromLeft (30)); nav.removeFromLeft (4);
         patchButton.setBounds (nav);
@@ -474,6 +492,7 @@ public:
 
 private:
     OrganicDevice& dev;
+    const bool window;
     OrganicField field;
     OrganicSourceButton sourceA, sourceB;
     OrganicSwellMeter meter;
@@ -545,5 +564,6 @@ private:
 };
 
 inline std::unique_ptr<juce::Component> OrganicDevice::createDeviceView()     { return std::make_unique<OrganicView> (*this); }
+inline std::unique_ptr<juce::Component> OrganicDevice::createWindowView()     { return std::make_unique<SynthPanel::Zoomed> (std::make_unique<OrganicView> (*this, true), 1.25f, getWindowViewSize()); }
 
 } // namespace elsewhere

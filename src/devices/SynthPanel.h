@@ -62,11 +62,13 @@ namespace SynthPanel
             g.setColour (juce::Colour (0xff060908));
             g.fillRoundedRectangle (r, 5.0f);
 
-            auto c = r.reduced (10.0f, 8.0f);
-            auto top = c.removeFromTop (12.0f);
-            auto bottom = c.removeFromBottom (16.0f);
+            // Type and margins grow with a big screen (a device's own window); in the chain they stay as they were
+            const float s = juce::jlimit (1.0f, 2.0f, r.getHeight() / 160.0f);
+            auto c = r.reduced (10.0f * s, 8.0f * s);
+            auto top = c.removeFromTop (12.0f * s);
+            auto bottom = c.removeFromBottom (16.0f * s);
 
-            g.setFont (juce::FontOptions (9.5f, juce::Font::bold).withKerningFactor (0.12f));
+            g.setFont (juce::FontOptions (9.5f * s, juce::Font::bold).withKerningFactor (0.12f));
             g.setColour (dim());
             g.drawText (header, top, juce::Justification::centredLeft);
 
@@ -78,24 +80,24 @@ namespace SynthPanel
                 const float norm = touched != nullptr ? touched->valueRange.convertTo0to1 (touched->getCurrentBaseValue()) : customNorm;
                 const auto name = touched != nullptr ? touched->getParameterName() : customName;
                 const auto value = touched != nullptr ? touched->getCurrentValueAsString() : customValue;
-                auto area = c.reduced (0.0f, 4.0f);
+                auto area = c.reduced (0.0f, 4.0f * s);
                 g.setColour (dim());
-                g.setFont (juce::FontOptions (10.5f, juce::Font::bold).withKerningFactor (0.08f));
-                g.drawText (name.toUpperCase(), area.removeFromTop (16.0f), juce::Justification::centredLeft);
+                g.setFont (juce::FontOptions (10.5f * s, juce::Font::bold).withKerningFactor (0.08f));
+                g.drawText (name.toUpperCase(), area.removeFromTop (16.0f * s), juce::Justification::centredLeft);
                 g.setColour (ink());
-                g.setFont (juce::FontOptions (22.0f));
-                g.drawFittedText (value, area.removeFromTop (30.0f).toNearestInt(), juce::Justification::centredLeft, 1, 0.7f);
+                g.setFont (juce::FontOptions (22.0f * s));
+                g.drawFittedText (value, area.removeFromTop (30.0f * s).toNearestInt(), juce::Justification::centredLeft, 1, 0.7f);
 
-                auto bar = bottom.withSizeKeepingCentre (bottom.getWidth(), 3.0f);
+                auto bar = bottom.withSizeKeepingCentre (bottom.getWidth(), 3.0f * s);
                 g.setColour (faint());
-                g.fillRoundedRectangle (bar, 1.5f);
+                g.fillRoundedRectangle (bar, 1.5f * s);
                 g.setColour (ink());
-                g.fillRoundedRectangle (bar.withWidth (juce::jmax (3.0f, bar.getWidth() * juce::jlimit (0.0f, 1.0f, norm))), 1.5f);
+                g.fillRoundedRectangle (bar.withWidth (juce::jmax (3.0f, bar.getWidth() * juce::jlimit (0.0f, 1.0f, norm))), 1.5f * s);
                 return;
             }
 
             if (drawBody)
-                drawBody (g, c.reduced (0.0f, 4.0f));
+                drawBody (g, c.reduced (0.0f, 4.0f * s));
 
             // Oscilloscope: about two cycles, starting at a rising zero crossing
             else if (readScope)
@@ -112,7 +114,7 @@ namespace SynthPanel
                 float peak = 0.05f;
                 for (int i = 0; i < window; ++i) peak = juce::jmax (peak, std::abs (scope[(size_t) (start + i)]));
 
-                auto area = c.reduced (0.0f, 6.0f);
+                auto area = c.reduced (0.0f, 6.0f * s);
                 const float mid = area.getCentreY(), amp = area.getHeight() * 0.46f / peak;
                 const int points = juce::jmax (2, (int) area.getWidth());
                 juce::Path p;
@@ -126,11 +128,11 @@ namespace SynthPanel
                 g.setColour (faint());
                 g.fillRect (area.getX(), mid, area.getWidth(), 1.0f);
                 g.setColour (ink());
-                g.strokePath (p, juce::PathStrokeType (1.4f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+                g.strokePath (p, juce::PathStrokeType (1.4f * std::sqrt (s), juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
             }
 
             g.setColour (ink());
-            g.setFont (juce::FontOptions (12.5f, juce::Font::bold));
+            g.setFont (juce::FontOptions (12.5f * s, juce::Font::bold));
             g.drawFittedText (patchName, bottom.toNearestInt(), juce::Justification::centredLeft, 1, 0.8f);
         }
 
@@ -178,6 +180,7 @@ namespace SynthPanel
         ~Knob() override    { slider.removeMouseListener (&touch); }
 
         int maxSize = 38;   // knob diameter limit; bigger for panels with few, large knobs
+        bool roomy = false; // in the device's own window, where the cells are bigger: a larger knob
 
         void paint (juce::Graphics& g) override
         {
@@ -191,7 +194,7 @@ namespace SynthPanel
             // Knob and name as one block, centred in the cell, with the name just under the knob
             auto r = getLocalBounds();
             const int labelH = 12, gap = 2;
-            const int d = juce::jmin (r.getWidth(), r.getHeight() - labelH - gap, maxSize);
+            const int d = juce::jmin (r.getWidth(), r.getHeight() - labelH - gap, roomy ? maxSize * 5 / 4 + 2 : maxSize);
             const int top = r.getY() + (r.getHeight() - (d + gap + labelH)) / 2;
             slider.setBounds (r.getCentreX() - d / 2, top, d, d);
             labelArea = { r.getX(), top + d + gap, r.getWidth(), labelH };
@@ -386,13 +389,23 @@ namespace SynthPanel
 
         std::vector<juce::Rectangle<int>> getLayoutSections() const override    { return sections; }
 
+        /**
+            For the device's own window: columns() stacks the sections in this many rows
+            (each filling the width) instead of one strip, and the knobs may grow.
+        */
+        void setWindowRows (int rows)
+        {
+            windowRows = rows;
+            for (auto& c : owned)
+                if (auto* k = dynamic_cast<Knob*> (c.get()))
+                    k->roomy = rows > 0;
+        }
+
     protected:
         /** The panel's sections (set by columns(), or by the panel itself), for wrapping into rows. */
         std::vector<juce::Rectangle<int>> sections;
+        int windowRows = 0;
 
-    public:
-
-    protected:
         std::vector<std::unique_ptr<juce::Component>> owned;
 
         template <typename T, typename... Args>
@@ -400,6 +413,8 @@ namespace SynthPanel
         {
             auto c = std::make_unique<T> (std::forward<Args> (args)...);
             c->onTouch = [this] (te::AutomatableParameter& p) { if (onTouch) onTouch (p); };
+            if (auto* k = dynamic_cast<Knob*> (c.get()))
+                k->roomy = windowRows > 0;
             addAndMakeVisible (*c);
             auto* raw = c.get();
             owned.push_back (std::move (c));
@@ -433,6 +448,9 @@ namespace SynthPanel
         /** Splits a row into sections with the given relative widths. */
         std::vector<juce::Rectangle<int>> columns (juce::Rectangle<int> r, std::initializer_list<int> weights, int gap = 6)
         {
+            if (windowRows > 1)
+                return stacked (r, weights, windowRows, 8);
+
             int total = 0;
             for (auto w : weights) total += w;
             const int avail = r.getWidth() - gap * ((int) weights.size() - 1);
@@ -445,6 +463,90 @@ namespace SynthPanel
             sections = out;
             return out;
         }
+
+        /**
+            The same sections in several rows, for a window: the order is kept, the rows are
+            cut where they come out most even, and every row fills the width.
+        */
+        static std::vector<juce::Rectangle<int>> stacked (juce::Rectangle<int> r, const std::vector<int>& weights, int rows, int gap)
+        {
+            const int n = (int) weights.size();
+            rows = juce::jlimit (1, juce::jmax (1, n), rows);
+
+            // Where each row ends: every way of cutting is tried (there are only a few sections)
+            std::vector<int> ends, best;
+            int bestWidest = std::numeric_limits<int>::max();
+            std::function<void (int, int)> cut = [&] (int from, int widest)
+            {
+                if ((int) ends.size() == rows - 1)
+                {
+                    int sum = 0;
+                    for (int i = from; i < n; ++i) sum += weights[(size_t) i];
+                    widest = juce::jmax (widest, sum);
+                    if (widest < bestWidest) { bestWidest = widest; best = ends; }
+                    return;
+                }
+                int sum = 0;
+                for (int end = from + 1; end <= n - (rows - 1 - (int) ends.size()); ++end)
+                {
+                    sum += weights[(size_t) end - 1];
+                    ends.push_back (end);
+                    cut (end, juce::jmax (widest, sum));
+                    ends.pop_back();
+                }
+            };
+            cut (0, 0);
+            best.push_back (n);
+
+            std::vector<juce::Rectangle<int>> out;
+            const int rowH = (r.getHeight() - gap * (rows - 1)) / rows;
+            int from = 0;
+            for (int end : best)
+            {
+                auto line = r.removeFromTop (rowH);
+                r.removeFromTop (gap);
+                int total = 0;
+                for (int i = from; i < end; ++i) total += weights[(size_t) i];
+                const int avail = line.getWidth() - gap * (end - from - 1);
+                for (int i = from; i < end; ++i)
+                {
+                    out.push_back (i == end - 1 ? line : line.removeFromLeft (avail * weights[(size_t) i] / juce::jmax (1, total)));
+                    line.removeFromLeft (gap);
+                }
+                from = end;
+            }
+            return out;
+        }
+    };
+
+    //==============================================================================
+    /**
+        Shows a panel enlarged, for a device's own window: the panel is laid out in a
+        smaller space and scaled up to fill this one, so its controls and type all grow together.
+        A window made smaller than it opens at gives the enlargement up first (down to actual
+        size), so the panel keeps its room for as long as it can.
+    */
+    class Zoomed : public juce::Component
+    {
+    public:
+        Zoomed (std::unique_ptr<juce::Component> panel, float zoomToUse, juce::Point<int> openSize)
+            : inner (std::move (panel)), zoom (zoomToUse), open (openSize)
+        {
+            addAndMakeVisible (*inner);
+        }
+
+        void resized() override
+        {
+            const float fit = juce::jmin ((float) getWidth() / (float) juce::jmax (1, open.x), (float) getHeight() / (float) juce::jmax (1, open.y));
+            const float z = juce::jlimit (1.0f, zoom, zoom * fit);
+            inner->setTransform (juce::AffineTransform::scale (z));
+            inner->setBounds (0, 0, juce::roundToInt ((float) getWidth() / z), juce::roundToInt ((float) getHeight() / z));
+        }
+
+    private:
+        std::unique_ptr<juce::Component> inner;
+        float zoom;
+        juce::Point<int> open;
     };
 
     //==============================================================================

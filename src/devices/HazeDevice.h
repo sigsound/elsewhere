@@ -73,6 +73,8 @@ public:
     juce::String getSelectableDescription() override   { return "Elsewhere Haze"; }
     int getDeviceViewWidth() const override            { return 1200; }
     std::unique_ptr<juce::Component> createDeviceView() override;
+    std::unique_ptr<juce::Component> createWindowView() override;
+    juce::Point<int> getWindowViewSize() const override    { return { 1000, 700 }; }
 
     bool isSynth() override                             { return true; }
     bool takesMidiInput() override                      { return true; }
@@ -528,12 +530,16 @@ public:
 
         const float wobble = dev.wowNow.load();
         const auto ink = Theme::isLight() ? Colours::text : juce::Colour (0xffdde4f7);
-        auto pic = r.reduced (10.0f, 26.0f);
+
+        // A big screen (the device's own window) gets bigger type and more scanlines; in the chain it is as it was
+        const float big = juce::jlimit (1.0f, 1.6f, r.getHeight() / 160.0f);
+        auto pic = r.reduced (10.0f * big, 26.0f * big);
 
         // Scanlines, sliding sideways with the wobble
-        for (int i = 0; i < 9; ++i)
+        const int lines = juce::jmax (8, juce::roundToInt (pic.getHeight() / 12.0f));
+        for (int i = 0; i <= lines; ++i)
         {
-            const float y = pic.getY() + pic.getHeight() * (float) i / 8.0f;
+            const float y = pic.getY() + pic.getHeight() * (float) i / (float) lines;
             const float shift = wobble * 6.0f * std::sin ((float) i * 0.9f + (float) frame * 0.05f);
             g.setColour (Colours::outline.withAlpha (0.55f));
             g.fillRect (juce::Rectangle<float> (pic.getX() + shift, y - 0.5f, pic.getWidth(), 1.0f));
@@ -563,12 +569,12 @@ public:
         {
             const float fringe = 1.0f + (float) chromaMode;
             g.setColour (Colours::clips[4].withAlpha (0.55f));
-            g.strokePath (path (-fringe), juce::PathStrokeType (1.4f));
+            g.strokePath (path (-fringe * big), juce::PathStrokeType (1.4f * big));
             g.setColour (Colours::clips[6].withAlpha (0.55f));
-            g.strokePath (path (fringe), juce::PathStrokeType (1.4f));
+            g.strokePath (path (fringe * big), juce::PathStrokeType (1.4f * big));
         }
         g.setColour (Theme::indicator (Colours::accent));
-        g.strokePath (path (0.0f), juce::PathStrokeType (1.6f));
+        g.strokePath (path (0.0f), juce::PathStrokeType (1.6f * big));
 
         // Tracking noise in a glitch
         if (dev.glitching.load())
@@ -583,13 +589,13 @@ public:
 
         // On-screen display
         g.setColour (ink);
-        g.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::bold));
-        auto top = r.reduced (10.0f, 6.0f).removeFromTop (16.0f);
-        auto bottom = r.reduced (10.0f, 6.0f).removeFromBottom (16.0f);
+        g.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 12.0f * big, juce::Font::bold));
+        auto top = r.reduced (10.0f * big, 6.0f * big).removeFromTop (16.0f * big);
+        auto bottom = r.reduced (10.0f * big, 6.0f * big).removeFromBottom (16.0f * big);
         const bool playing = dev.getActiveVoices() > 0;
         g.drawText (juce::String::fromUTF8 (playing ? "PLAY \xe2\x96\xb6" : "STOP \xe2\x96\xa0"), top, juce::Justification::centredLeft);
         g.drawText ("SP", top, juce::Justification::centredRight);
-        g.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 10.5f, juce::Font::plain));
+        g.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 10.5f * big, juce::Font::plain));
         const auto secs = (int) dev.playSeconds.load();
         g.drawText (juce::String (secs / 3600) + ":" + juce::String ((secs / 60) % 60).paddedLeft ('0', 2) + ":" + juce::String (secs % 60).paddedLeft ('0', 2),
                     bottom, juce::Justification::centredLeft);
@@ -612,8 +618,10 @@ private:
 class HazeView : public SynthPanel::PanelBase, private juce::Timer
 {
 public:
-    HazeView (HazeDevice& d) : dev (d), screen (d)
+    /** `inWindow`: the layout for the device's own window (the screen across the top, the sections in two rows). */
+    HazeView (HazeDevice& d, bool inWindow = false) : dev (d), window (inWindow), screen (d)
     {
+        if (window) setWindowRows (2);
         addAndMakeVisible (screen);
         for (auto* b : { &prevButton, &nextButton, &patchButton })
             addAndMakeVisible (b);
@@ -651,14 +659,29 @@ public:
     void resized() override
     {
         auto r = getLocalBounds();
-        auto display = r.removeFromLeft (260);
-        auto nav = display.removeFromBottom (24);
-        display.removeFromBottom (4);
-        screen.setBounds (display);
-        prevButton.setBounds (nav.removeFromLeft (30)); nav.removeFromLeft (4);
-        nextButton.setBounds (nav.removeFromLeft (30)); nav.removeFromLeft (4);
-        patchButton.setBounds (nav);
-        r.removeFromLeft (6);
+        if (window)
+        {
+            // The picture across the top, the patch under its corner, then the sections
+            auto display = r.removeFromTop (juce::jmax (150, r.getHeight() * 33 / 100));
+            r.removeFromTop (6);
+            auto nav = r.removeFromTop (24).removeFromLeft (300);
+            r.removeFromTop (8);
+            screen.setBounds (display);
+            prevButton.setBounds (nav.removeFromLeft (30)); nav.removeFromLeft (4);
+            nextButton.setBounds (nav.removeFromLeft (30)); nav.removeFromLeft (4);
+            patchButton.setBounds (nav);
+        }
+        else
+        {
+            auto display = r.removeFromLeft (260);
+            auto nav = display.removeFromBottom (24);
+            display.removeFromBottom (4);
+            screen.setBounds (display);
+            prevButton.setBounds (nav.removeFromLeft (30)); nav.removeFromLeft (4);
+            nextButton.setBounds (nav.removeFromLeft (30)); nav.removeFromLeft (4);
+            patchButton.setBounds (nav);
+            r.removeFromLeft (6);
+        }
 
         auto cols = columns (r, { 176, 128, 128, 128, 176, 156 }, 6);
         toneArea = cols[0]; filterArea = cols[1]; envArea = cols[2]; tapeArea = cols[3]; vhsArea = cols[4]; hazeArea = cols[5];
@@ -688,6 +711,7 @@ public:
 
 private:
     HazeDevice& dev;
+    const bool window;
     HazeScreen screen;
     juce::TextButton prevButton { juce::String::fromUTF8 ("\xe2\x97\x80") }, nextButton { juce::String::fromUTF8 ("\xe2\x96\xb6") }, patchButton { "Patches" };
     SynthPanel::Selector *waveSel = nullptr, *chromaSel = nullptr;
@@ -724,5 +748,6 @@ private:
 };
 
 inline std::unique_ptr<juce::Component> HazeDevice::createDeviceView()     { return std::make_unique<HazeView> (*this); }
+inline std::unique_ptr<juce::Component> HazeDevice::createWindowView()     { return std::make_unique<SynthPanel::Zoomed> (std::make_unique<HazeView> (*this, true), 1.25f, getWindowViewSize()); }
 
 } // namespace elsewhere

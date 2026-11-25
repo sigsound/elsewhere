@@ -746,6 +746,8 @@ public:
     juce::String getSelectableDescription() override   { return "Elsewhere Modular"; }
     int getDeviceViewWidth() const override            { return 1400; }
     std::unique_ptr<juce::Component> createDeviceView() override;
+    std::unique_ptr<juce::Component> createWindowView() override;
+    juce::Point<int> getWindowViewSize() const override    { return { 1200, 720 }; }
 
     bool isSynth() override                             { return true; }
     bool takesMidiInput() override                      { return true; }
@@ -1380,6 +1382,13 @@ namespace ModularUI
 
         static int widthFor (const Modular::Spec& s)    { return s.columns * colW + 8; }
 
+        /** The height at which all of a module shows: its knobs, its inputs and its outputs. */
+        static int heightFor (const Modular::Spec& s)
+        {
+            auto rowsOf = [&s] (size_t count) { return ((int) count + s.columns - 1) / s.columns; };
+            return titleH + 2 + rowsOf (s.params.size()) * knobH + rowsOf (s.ins.size()) * jackH + 2 + rowsOf (s.outs.size()) * jackH + 4;
+        }
+
         int getModuleId() const         { return (int) tree["id"]; }
         const Modular::Spec& getSpec() const { return *spec; }
 
@@ -1479,15 +1488,64 @@ namespace ModularUI
             return w + 70;
         }
 
+        //==============================================================================
+        // In the device's own window the modules wrap into rows instead of one long strip.
+        // Cables and jacks are worked out from where each module is, so they follow.
+        static constexpr int rowGap = 8;
+        std::function<void()> onRebuilt;    // the modules changed: the window lays the rows out again
+
+        /** Rows no wider than `width`, each `rowHeight` tall (a width of 0: one long row). */
+        void setWrap (int width, int rowHeight)
+        {
+            wrapWidth = width;
+            wrapRowH = rowHeight;
+            resized();
+        }
+
+        /** How many rows the modules (and the add button) need at this width. */
+        int rowsFor (int width) const
+        {
+            int rows = 1, x = 4;
+            auto place = [&] (int w)
+            {
+                if (x > 4 && x + w > width - 4) { x = 4; ++rows; }
+                x += w + 6;
+            };
+            for (auto& p : panels) place (ModulePanel::widthFor (p->getSpec()));
+            place (addButtonW - 6);
+            return rows;
+        }
+
+        static int heightFor (int rows, int rowHeight)    { return rows * rowHeight + (rows - 1) * rowGap; }
+
+        /** The row height the tallest module here needs. */
+        int tallestModule() const
+        {
+            int h = 0;
+            for (auto& p : panels) h = juce::jmax (h, ModulePanel::heightFor (p->getSpec()));
+            return h;
+        }
+
         void resized() override
         {
-            int x = 4;
+            const bool wrap = wrapWidth > 0;
+            const int h = wrap ? wrapRowH : getHeight();
+            int x = 4, y = 0;
+            auto place = [&] (int w)
+            {
+                if (wrap && x > 4 && x + w > wrapWidth - 4) { x = 4; y += h + rowGap; }
+                const juce::Point<int> at (x, y);
+                x += w + 6;
+                return at;
+            };
             for (auto& p : panels)
             {
-                p->setBounds (x, 0, ModulePanel::widthFor (p->getSpec()), getHeight());
-                x += p->getWidth() + 6;
+                const int w = ModulePanel::widthFor (p->getSpec());
+                const auto at = place (w);
+                p->setBounds (at.x, at.y, w, h);
             }
-            addButton.setBounds (x, getHeight() / 2 - 30, 56, 60);
+            const auto at = place (addButtonW - 6);
+            addButton.setBounds (at.x, at.y + h / 2 - 30, addButtonW, 60);
         }
 
         void paint (juce::Graphics&) override {}
@@ -1501,13 +1559,16 @@ namespace ModularUI
                 auto from = jackPosition ({ (int) c["from"], false, outIndex (c) });
                 auto to = jackPosition ({ (int) c["to"], true, inIndex (c) });
                 if (from && to)
-                    drawCable (g, *from, *to, signalColour (signalOf ({ (int) c["from"], false, outIndex (c) })), (float) getHeight());
+                    drawCable (g, *from, *to, signalColour (signalOf ({ (int) c["from"], false, outIndex (c) })), floorBelow (*from, *to));
                 ++index;
             }
 
             if (dragFrom)
                 if (auto p = jackPosition (*dragFrom))
-                    drawCable (g, *p, target ? *jackPosition (*target) : dragPoint, signalColour (signalOf (*dragFrom)), (float) getHeight());
+                {
+                    const auto end = target ? *jackPosition (*target) : dragPoint;
+                    drawCable (g, *p, end, signalColour (signalOf (*dragFrom)), floorBelow (*p, end));
+                }
 
             drawProbe (g);
         }
@@ -1564,11 +1625,17 @@ namespace ModularUI
             repaint();
         }
 
-        void moveModule (int id, float rackX)
+        void moveModule (int id, juce::Point<float> rackPos)
         {
+            // The modules it was dropped after: those to its left and, when they wrap, those in the rows above
             int index = 0;
             for (auto& p : panels)
-                if (rackX > (float) p->getBounds().getCentreX()) ++index;
+            {
+                const auto b = p->getBounds().toFloat();
+                const bool sameRow = wrapWidth <= 0 || (rackPos.y >= b.getY() && rackPos.y < b.getBottom() + (float) rowGap);
+                const bool rowAbove = wrapWidth > 0 && rackPos.y >= b.getBottom() + (float) rowGap;
+                if (rowAbove || (sameRow && rackPos.x > b.getCentreX())) ++index;
+            }
             device.getUndo()->beginNewTransaction ("Move module");
             auto list = device.modulesInOrder();
             auto it = std::find_if (list.begin(), list.end(), [id] (const juce::ValueTree& m) { return (int) m["id"] == id; });
@@ -1585,6 +1652,17 @@ namespace ModularUI
         juce::TextButton addButton { "+" };
         std::optional<JackRef> dragFrom, target, hovered;
         juce::Point<float> dragPoint;
+        static constexpr int addButtonW = 56;
+        int wrapWidth = 0, wrapRowH = 0;
+
+        /** How low a cable between these two points may hang: the bottom of the lower one's row. */
+        float floorBelow (juce::Point<float> a, juce::Point<float> b) const
+        {
+            if (wrapWidth <= 0) return (float) getHeight();
+            const int step = wrapRowH + rowGap;
+            const int row = juce::jmax (0, (int) juce::jmax (a.y, b.y) / juce::jmax (1, step));
+            return (float) (row * step + wrapRowH);
+        }
 
         void timerCallback() override   { repaint(); }
 
@@ -1709,8 +1787,11 @@ namespace ModularUI
                     panels.push_back (std::make_unique<ModulePanel> (*this, m, device.getUndo()));
                     addAndMakeVisible (*panels.back());
                 }
-            setSize (idealWidth(), juce::jmax (getHeight(), 100));
+            if (wrapWidth <= 0)
+                setSize (idealWidth(), juce::jmax (getHeight(), 100));
             resized();
+            if (wrapWidth > 0 && onRebuilt)
+                onRebuilt();
             repaint();
         }
 
@@ -1882,7 +1963,7 @@ namespace ModularUI
             draggingTitle = false;
             setAlpha (1.0f);
             if (e.getDistanceFromDragStart() > 10)
-                rack.moveModule (getModuleId(), e.position.x + (float) getX());
+                rack.moveModule (getModuleId(), e.position + getPosition().toFloat());
             return;
         }
         rack.endCable (e.position + getPosition().toFloat());
@@ -1894,8 +1975,10 @@ namespace ModularUI
 class ModularView : public SynthPanel::PanelBase, private juce::Timer
 {
 public:
-    ModularView (ModularDevice& d) : dev (d), rack (d)
+    /** `inWindow`: the layout for the device's own window (display and patch across the top, the rack in rows below). */
+    ModularView (ModularDevice& d, bool inWindow = false) : dev (d), window (inWindow), rack (d)
     {
+        if (window) setWindowRows (1);
         oled.readScope = [this] (float* dst, int n) { dev.scope.read (dst, n); };
         oled.getSamplesPerCycle = [this] { return dev.getSamplesPerCycle(); };
         oled.header = "MODULAR";
@@ -1916,8 +1999,19 @@ public:
                      knob (d.macros[0], "Macro 1", Colours::clips[6]), knob (d.macros[1], "Macro 2", Colours::clips[6]),
                      knob (d.macros[2], "Macro 3", Colours::clips[6]), knob (d.macros[3], "Macro 4", Colours::clips[6]) };
 
-        viewport.setViewedComponent (&rack, false);
-        viewport.setScrollBarsShown (false, true);
+        if (window)
+        {
+            // The rack is enlarged inside a holder, so the viewport scrolls its enlarged size
+            rackHolder.addAndMakeVisible (rack);
+            viewport.setViewedComponent (&rackHolder, false);
+            viewport.setScrollBarsShown (true, false);
+            rack.onRebuilt = [this] { resized(); };
+        }
+        else
+        {
+            viewport.setViewedComponent (&rack, false);
+            viewport.setScrollBarsShown (false, true);
+        }
         addAndMakeVisible (viewport);
 
         updatePatchName();
@@ -1934,6 +2028,12 @@ public:
 
     void resized() override
     {
+        if (window)
+        {
+            layoutWindow();
+            return;
+        }
+
         auto r = getLocalBounds();
         auto display = r.removeFromLeft (200);
         auto nav = display.removeFromBottom (24);
@@ -1958,13 +2058,71 @@ public:
 
 private:
     ModularDevice& dev;
+    const bool window;
     SynthPanel::Oled oled;
     ModularUI::Rack rack;
+    juce::Component rackHolder;
     juce::Viewport viewport;
     juce::TextButton prevButton { juce::String::fromUTF8 ("\xe2\x97\x80") }, nextButton { juce::String::fromUTF8 ("\xe2\x96\xb6") }, patchButton { "Patches" };
     std::vector<SynthPanel::Knob*> controls;
     juce::Rectangle<int> controlArea;
     int lastRackWidth = 0;
+
+    /**
+        The display and the patch controls across the top; under them the rack, its modules
+        wrapped into rows and enlarged as far as the window allows, so a whole patch is in view.
+    */
+    void layoutWindow()
+    {
+        auto r = getLocalBounds();
+        auto top = r.removeFromTop (juce::jlimit (150, 190, r.getHeight() / 4));
+        r.removeFromTop (8);
+
+        oled.setBounds (top.removeFromLeft (top.getWidth() * 46 / 100));
+        top.removeFromLeft (8);
+        auto nav = top.removeFromTop (26);
+        top.removeFromTop (6);
+        prevButton.setBounds (nav.removeFromLeft (34)); nav.removeFromLeft (4);
+        nextButton.setBounds (nav.removeFromLeft (34)); nav.removeFromLeft (4);
+        patchButton.setBounds (nav.removeFromLeft (juce::jmin (nav.getWidth(), 320)));
+
+        controlArea = top;
+        auto c = content (controlArea);
+        row (c.withSizeKeepingCentre (c.getWidth(), juce::jmin (c.getHeight(), 84)),
+             { controls[0], controls[1], controls[2], controls[3], controls[4], controls[5] }, 6);
+
+        // The biggest size at which every row still fits the height (from a little under the rest
+        // of the panel's size to a little over it); failing that, the smallest, and scrolling.
+        // A row is tall enough for all of its tallest module, outputs included.
+        const int minRow = juce::jmax (164, rack.tallestModule()), maxRow = minRow + 40;
+        float zoom = 0.8f;
+        int width = r.getWidth(), rows = 1;
+        bool fits = false;
+        for (int percent = 120; percent >= 80 && ! fits; percent -= 5)
+        {
+            const float z = (float) percent / 100.0f;
+            const int w = (int) ((float) r.getWidth() / z);
+            const int n = rack.rowsFor (w);
+            if ((float) ModularUI::Rack::heightFor (n, minRow) * z <= (float) r.getHeight())
+            {
+                zoom = z; width = w; rows = n; fits = true;
+            }
+        }
+        if (! fits)
+        {
+            width = (int) ((float) (r.getWidth() - viewport.getScrollBarThickness()) / zoom);
+            rows = rack.rowsFor (width);
+        }
+
+        const int rowH = fits ? juce::jlimit (minRow, maxRow, ((int) ((float) r.getHeight() / zoom) - (rows - 1) * ModularUI::Rack::rowGap) / rows)
+                              : minRow;
+        const int height = ModularUI::Rack::heightFor (rows, rowH);
+        rack.setTransform (juce::AffineTransform::scale (zoom));
+        rack.setBounds (0, 0, width, height);
+        rack.setWrap (width, rowH);
+        rackHolder.setSize ((int) ((float) width * zoom), (int) ((float) height * zoom));
+        viewport.setBounds (r);
+    }
 
     void step (int delta)
     {
@@ -2010,5 +2168,6 @@ private:
 };
 
 inline std::unique_ptr<juce::Component> ModularDevice::createDeviceView()      { return std::make_unique<ModularView> (*this); }
+inline std::unique_ptr<juce::Component> ModularDevice::createWindowView()      { return std::make_unique<SynthPanel::Zoomed> (std::make_unique<ModularView> (*this, true), 1.25f, getWindowViewSize()); }
 
 } // namespace elsewhere

@@ -101,6 +101,8 @@ public:
     juce::String getSelectableDescription() override   { return "Elsewhere Drums"; }
     int getDeviceViewWidth() const override            { return 1080; }
     std::unique_ptr<juce::Component> createDeviceView() override;
+    std::unique_ptr<juce::Component> createWindowView() override;
+    juce::Point<int> getWindowViewSize() const override    { return { 1040, 680 }; }
 
     bool isSynth() override                             { return true; }
     bool takesMidiInput() override                      { return true; }
@@ -923,8 +925,10 @@ class DrumsView : public SynthPanel::PanelBase,
                   private juce::Timer
 {
 public:
-    DrumsView (DrumsDevice& d) : drums (d)
+    /** `inWindow`: the layout for the device's own window (the kit or pads across the top, the sound and its controls below). */
+    DrumsView (DrumsDevice& d, bool inWindow = false) : drums (d), window (inWindow)
     {
+        if (window) setWindowRows (1);
         // Kit view by default on drum tracks, pads elsewhere; remembered per instance
         auto view = drums.state.getProperty ("view").toString();
         if (view.isEmpty())
@@ -979,6 +983,12 @@ public:
 
     void resized() override
     {
+        if (window)
+        {
+            layoutWindow();
+            return;
+        }
+
         auto r = getLocalBounds();
         const int gap = 6;
 
@@ -1114,6 +1124,7 @@ public:
 
 private:
     DrumsDevice& drums;
+    const bool window;
     SynthPanel::Oled oled;
     juce::TextButton prevKit { juce::String::fromUTF8 ("\xe2\x97\x80") }, nextKit { juce::String::fromUTF8 ("\xe2\x96\xb6") }, kitMenu { "Kits" };
     juce::TextButton kitButton { "Kit" }, padsButton { "Pads" };
@@ -1123,6 +1134,63 @@ private:
     juce::Rectangle<int> gridArea, drumArea, padArea, kitArea;
     int selected = 0, dragOverPad = -1, shownKit = -1;
     bool kitMode = false;
+
+    /**
+        The kit or the pads across the top, as big as the window allows; under them the
+        selected sound's waveform, its controls and the kit's.
+    */
+    void layoutWindow()
+    {
+        auto r = getLocalBounds();
+        const int gap = 8;
+
+        auto bar = r.removeFromTop (24);
+        kitButton.setBounds (bar.removeFromLeft (60));
+        bar.removeFromLeft (2);
+        padsButton.setBounds (bar.removeFromLeft (60));
+        auto nav = bar.removeFromRight (300);
+        prevKit.setBounds (nav.removeFromLeft (30)); nav.removeFromLeft (4);
+        nextKit.setBounds (nav.removeFromLeft (30)); nav.removeFromLeft (4);
+        kitMenu.setBounds (nav);
+        kitButton.setToggleState (kitMode, juce::dontSendNotification);
+        padsButton.setToggleState (! kitMode, juce::dontSendNotification);
+        r.removeFromTop (gap + 3);
+
+        auto lower = r.removeFromBottom (juce::jlimit (150, 230, r.getHeight() * 2 / 5));
+        r.removeFromBottom (gap + 3);
+
+        gridArea = r.reduced (3, 0);
+        drumArea = gridArea.withTrimmedBottom (kitMode ? extrasHeight() + 6 : 0);
+        if (kitMode)
+        {
+            // The kit is drawn for a wide, low space: in a tall one it keeps that shape, centred
+            const int w = juce::jmin (drumArea.getWidth(), drumArea.getHeight() * 33 / 10);
+            drumArea = drumArea.withSizeKeepingCentre (w, juce::jmin (drumArea.getHeight(), w * 10 / 33));
+        }
+
+        oled.setBounds (lower.removeFromLeft (lower.getWidth() * 38 / 100));
+        lower.removeFromLeft (gap);
+        kitArea = lower.removeFromRight (juce::jmax (96, lower.getWidth() * 28 / 100));
+        lower.removeFromRight (gap);
+        padArea = lower;
+
+        {
+            auto c = content (padArea);
+            auto top = c.removeFromTop (c.getHeight() / 2);
+            row (top, { padKnobs[0], padKnobs[1], padKnobs[2] }, 3);
+            row (c, { padKnobs[3], padKnobs[4], padKnobs[5] }, 3);
+        }
+        {
+            auto c = content (kitArea);
+            const int h = c.getHeight() / 3;
+            for (auto* k : kitKnobs) k->setBounds (c.removeFromTop (h));
+        }
+    }
+
+    /** The kit's line art and labels grow with it (in the chain: 1). */
+    float kitScale() const      { return window ? juce::jlimit (1.0f, 2.2f, (float) drumArea.getHeight() / 110.0f) : 1.0f; }
+    float labelScale() const    { return window ? juce::jmin (1.2f, kitScale()) : 1.0f; }
+    int extrasHeight() const    { return window ? 30 : 24; }
 
     // Pad numbers: 0 kick, 1 snare, 2 clap, 3 closed hat, 4 open hat, 5 low tom, 6 mid tom,
     // 7 high tom, 8 rim, 9 cowbell, 10 crash, 11 ride, 12 shaker, 13 clave, 14 808, 15 zap
@@ -1171,7 +1239,7 @@ private:
         }
 
         g.setColour (flash > 0.5f ? Colours::textInverse : Colours::text);
-        g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
+        g.setFont (juce::FontOptions (10.5f * (window && ! kitMode ? 1.2f : 1.0f), juce::Font::bold));
         const bool small = kitMode;
         g.drawFittedText (drums.getPadDisplayName (i), r.toNearestInt().reduced (4, 2), small ? juce::Justification::centred : juce::Justification::topLeft, small ? 1 : 2, 0.7f);
         if (! small)
@@ -1190,16 +1258,17 @@ private:
     void paintKit (juce::Graphics& g)
     {
         const auto ink = Colours::text;
+        const float ks = kitScale(), thin = std::sqrt (ks);
 
-        auto strokeFor = [&] (int i) { return (i == selected || i == dragOverPad) ? 2.2f : 1.3f; };
+        auto strokeFor = [&] (int i) { return ((i == selected || i == dragOverPad) ? 2.2f : 1.3f) * thin; };
         auto lineColour = [&] (int i) { return i == dragOverPad ? ink : colourFor (i).withAlpha (i == selected ? 1.0f : 0.8f); };
         auto fillColour = [&] (int i) { return Colours::panel.interpolatedWith (colourFor (i), 0.08f + (i == selected ? 0.12f : 0.0f) + 0.8f * flashes[(size_t) i]); };
 
         auto label = [&] (int i, juce::Rectangle<float> e)
         {
             g.setColour (flashes[(size_t) i] > 0.5f ? Colours::textInverse : (i == selected ? ink : Colours::textDim));
-            g.setFont (juce::FontOptions (9.0f, i == selected ? juce::Font::bold : juce::Font::plain));
-            g.drawFittedText (drums.getPadDisplayName (i), e.withTrimmedTop (e.getHeight() * 0.55f).toNearestInt(), juce::Justification::centredTop, 1, 0.6f);
+            g.setFont (juce::FontOptions (9.0f * labelScale(), i == selected ? juce::Font::bold : juce::Font::plain));
+            g.drawFittedText (drums.getPadDisplayName (i), e.withTrimmedTop (e.getHeight() * (window ? 0.61f : 0.55f)).toNearestInt(), juce::Justification::centredTop, 1, 0.6f);
         };
 
         // A stand: a line out from the centre, ending in three feet
@@ -1207,9 +1276,9 @@ private:
         {
             const juce::Point<float> end { from.x + std::cos (angle) * length, from.y + std::sin (angle) * length };
             g.setColour (c.withAlpha (0.45f));
-            g.drawLine ({ from, end }, 1.0f);
+            g.drawLine ({ from, end }, thin);
             for (float a : { -2.2f, 0.0f, 2.2f })
-                g.drawLine ({ end, end.translated (std::cos (angle + a) * 6.0f, std::sin (angle + a) * 6.0f) }, 1.0f);
+                g.drawLine ({ end, end.translated (std::cos (angle + a) * 6.0f * ks, std::sin (angle + a) * 6.0f * ks) }, thin);
         };
 
         auto drum = [&] (int i, juce::Rectangle<float> e, int lugs, bool wires)
@@ -1220,7 +1289,7 @@ private:
             g.setColour (c);
             g.drawEllipse (e, strokeFor (i));
             g.setColour (c.withAlpha (0.3f));
-            g.drawEllipse (e.reduced (e.getWidth() * 0.1f), 1.0f);
+            g.drawEllipse (e.reduced (e.getWidth() * 0.1f), thin);
 
             if (wires)
             {
@@ -1229,7 +1298,7 @@ private:
                 {
                     const float y = e.getCentreY() + (float) k * e.getHeight() * 0.09f;
                     const float half = std::sqrt (juce::jmax (0.0f, juce::square (e.getWidth() * 0.38f) - juce::square (y - e.getCentreY())));
-                    g.drawLine (e.getCentreX() - half, y, e.getCentreX() + half, y, 1.0f);
+                    g.drawLine (e.getCentreX() - half, y, e.getCentreX() + half, y, thin);
                 }
             }
 
@@ -1239,9 +1308,9 @@ private:
                 const float a = juce::MathConstants<float>::twoPi * (float) k / (float) lugs + 0.2f;
                 const juce::Point<float> p { e.getCentreX() + std::cos (a) * r, e.getCentreY() + std::sin (a) * r };
                 g.setColour (fillColour (i));
-                g.fillEllipse (juce::Rectangle<float> (5.0f, 5.0f).withCentre (p));
+                g.fillEllipse (juce::Rectangle<float> (5.0f * ks, 5.0f * ks).withCentre (p));
                 g.setColour (c);
-                g.drawEllipse (juce::Rectangle<float> (5.0f, 5.0f).withCentre (p), 1.0f);
+                g.drawEllipse (juce::Rectangle<float> (5.0f * ks, 5.0f * ks).withCentre (p), thin);
             }
             label (i, e);
         };
@@ -1249,12 +1318,12 @@ private:
         auto cymbal = [&] (int i, juce::Rectangle<float> e, float standAngle, bool hat)
         {
             const auto c = lineColour (i);
-            stand (e.getCentre(), standAngle, e.getWidth() * 0.5f + 10.0f, c);
+            stand (e.getCentre(), standAngle, e.getWidth() * 0.5f + 10.0f * ks, c);
 
             if (hat)   // the bottom cymbal peeking out
             {
                 g.setColour (c.withAlpha (0.35f));
-                g.drawEllipse (e.translated (2.5f, 2.5f), 1.0f);
+                g.drawEllipse (e.translated (2.5f * ks, 2.5f * ks), thin);
             }
 
             g.setColour (fillColour (i));
@@ -1270,11 +1339,11 @@ private:
                 const auto ring = e.withSizeKeepingCentre (e.getWidth() * k, e.getHeight() * k);
                 arc.addCentredArc (ring.getCentreX(), ring.getCentreY(), ring.getWidth() * 0.5f, ring.getHeight() * 0.5f, 0.0f,
                                    0.9f + k, 2.6f + k * 1.5f, true);
-                g.strokePath (arc, juce::PathStrokeType (1.0f));
+                g.strokePath (arc, juce::PathStrokeType (thin));
             }
             g.setColour (c.withAlpha (0.6f));
-            g.drawEllipse (e.withSizeKeepingCentre (e.getWidth() * 0.18f, e.getHeight() * 0.18f), 1.0f);
-            g.fillEllipse (juce::Rectangle<float> (3.0f, 3.0f).withCentre (e.getCentre()));
+            g.drawEllipse (e.withSizeKeepingCentre (e.getWidth() * 0.18f, e.getHeight() * 0.18f), thin);
+            g.fillEllipse (juce::Rectangle<float> (3.0f * ks, 3.0f * ks).withCentre (e.getCentre()));
             label (i, e);
         };
 
@@ -1291,11 +1360,11 @@ private:
                     g.setColour (c);
                     g.drawRoundedRectangle (e, 3.0f, strokeFor (i));
                     g.setColour (c.withAlpha (0.4f));
-                    g.drawHorizontalLine ((int) (e.getY() + 5.0f), e.getX() + 2.0f, e.getRight() - 2.0f);
-                    g.drawHorizontalLine ((int) (e.getBottom() - 5.0f), e.getX() + 2.0f, e.getRight() - 2.0f);
-                    auto pedal = juce::Rectangle<float> (e.getWidth() * 0.32f, 9.0f).withCentre ({ e.getCentreX(), e.getBottom() + 7.0f });
-                    g.drawRoundedRectangle (pedal, 2.0f, 1.0f);
-                    g.drawLine (pedal.getCentreX(), pedal.getY(), pedal.getCentreX(), e.getBottom() - 1.0f, 1.0f);
+                    g.drawHorizontalLine ((int) (e.getY() + 5.0f * ks), e.getX() + 2.0f, e.getRight() - 2.0f);
+                    g.drawHorizontalLine ((int) (e.getBottom() - 5.0f * ks), e.getX() + 2.0f, e.getRight() - 2.0f);
+                    auto pedal = juce::Rectangle<float> (e.getWidth() * 0.32f, 9.0f * ks).withCentre ({ e.getCentreX(), e.getBottom() + 7.0f * ks });
+                    g.drawRoundedRectangle (pedal, 2.0f, thin);
+                    g.drawLine (pedal.getCentreX(), pedal.getY(), pedal.getCentreX(), e.getBottom() - 1.0f, thin);
                     label (i, e.withTrimmedTop (e.getHeight() * 0.1f));
                     break;
                 }
@@ -1312,7 +1381,7 @@ private:
             if (drums.padHasUserSample (i))
             {
                 g.setColour (ink);
-                g.fillEllipse (juce::Rectangle<float> (5.0f, 5.0f).withCentre ({ e.getCentreX(), e.getY() + 7.0f }));
+                g.fillEllipse (juce::Rectangle<float> (5.0f * ks, 5.0f * ks).withCentre ({ e.getCentreX(), e.getY() + 7.0f * ks }));
             }
         }
     }
@@ -1349,7 +1418,7 @@ private:
             if (isExtra (i))
             {
                 static const int extras[] = { 2, 8, 9, 12, 13, 14, 15 };
-                auto row = gridArea.withTop (gridArea.getBottom() - 24);
+                auto row = gridArea.withTop (gridArea.getBottom() - extrasHeight());
                 auto w = row.getWidth() / 7;
                 for (int k = 0; k < 7; ++k)
                     if (extras[k] == i)
@@ -1435,6 +1504,7 @@ private:
                                     std::pair { p.decay, "Decay" }, std::pair { p.tone, "Tone" }, std::pair { p.drive, "Drive" } })
         {
             auto k = std::make_unique<SynthPanel::Knob> (param.param(), name, c);
+            k->roomy = window;
             k->onTouch = [this] (te::AutomatableParameter& ap) { oled.showParameter (ap); };
             addAndMakeVisible (*k);
             padKnobs.push_back (k.get());
@@ -1517,5 +1587,6 @@ private:
 
 
 inline std::unique_ptr<juce::Component> DrumsDevice::createDeviceView()    { return std::make_unique<DrumsView> (*this); }
+inline std::unique_ptr<juce::Component> DrumsDevice::createWindowView()    { return std::make_unique<SynthPanel::Zoomed> (std::make_unique<DrumsView> (*this, true), 1.25f, getWindowViewSize()); }
 
 } // namespace elsewhere

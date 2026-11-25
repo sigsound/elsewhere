@@ -232,6 +232,8 @@ public:
     juce::String getSelectableDescription() override   { return "Elsewhere Poly"; }
     int getDeviceViewWidth() const override            { return 1640; }
     std::unique_ptr<juce::Component> createDeviceView() override;
+    std::unique_ptr<juce::Component> createWindowView() override;
+    juce::Point<int> getWindowViewSize() const override    { return { 1260, 660 }; }
 
     bool isSynth() override                             { return true; }
     bool takesMidiInput() override                      { return true; }
@@ -1425,8 +1427,10 @@ private:
 class PolyView : public PolyPanelBase, private juce::Timer
 {
 public:
-    PolyView (PolyDevice& d) : polyDev (d)
+    /** `inWindow`: the layout for the device's own window (a big display, the sections in two rows). */
+    PolyView (PolyDevice& d, bool inWindow = false) : polyDev (d), window (inWindow)
     {
+        if (window) setWindowRows (2);
         modelSel = selector (d.model, PolyDevice::modelNames(), Colours::accent);
 
         oled.readScope = [this] (float* dst, int n) { polyDev.scope.read (dst, n); };
@@ -1466,23 +1470,37 @@ public:
     void resized() override
     {
         auto r = getLocalBounds();
-        const int gap = 6;
+        const int gap = window ? 8 : 6;
 
-        auto display = r.removeFromLeft (200);
-        modelSel->setBounds (display.removeFromTop (20));
-        display.removeFromTop (4);
+        auto display = r.removeFromLeft (window ? juce::jmin (320, r.getWidth() * 32 / 100) : 200);
+        modelSel->setBounds (display.removeFromTop (window ? 22 : 20));
+        display.removeFromTop (window ? 6 : 4);
+        if (window)
+        {
+            // Voice and output sit under the display, leaving the rest of the window to the model's panel
+            auto under = display.removeFromBottom (192);
+            display.removeFromBottom (gap);
+            voiceArea = under.removeFromLeft ((under.getWidth() - gap) / 2);
+            under.removeFromLeft (gap);
+            outArea = under;
+        }
         auto nav = display.removeFromBottom (24);
-        display.removeFromBottom (4);
+        display.removeFromBottom (window ? 6 : 4);
         oled.setBounds (display);
         prevButton.setBounds (nav.removeFromLeft (30)); nav.removeFromLeft (4);
         nextButton.setBounds (nav.removeFromLeft (30)); nav.removeFromLeft (4);
         patchButton.setBounds (nav);
         r.removeFromLeft (gap);
 
-        outArea = r.removeFromRight (150);
-        r.removeFromRight (gap);
-        voiceArea = r.removeFromRight (150);
-        r.removeFromRight (gap);
+        if (! window)
+        {
+            outArea = r.removeFromRight (150);
+            r.removeFromRight (gap);
+            voiceArea = r.removeFromRight (150);
+            r.removeFromRight (gap);
+        }
+        // A narrow window: a third row, so the sections keep their width
+        if (window && body != nullptr) body->setWindowRows (r.getWidth() < 540 ? 3 : 2);
         if (body != nullptr) body->setBounds (r);
         sections = { voiceArea, outArea };
 
@@ -1507,6 +1525,7 @@ public:
 
 private:
     PolyDevice& polyDev;
+    const bool window;
     SynthPanel::Oled oled;
     juce::TextButton prevButton { juce::String::fromUTF8 ("\xe2\x97\x80") }, nextButton { juce::String::fromUTF8 ("\xe2\x96\xb6") }, patchButton { "Patches" };
     std::unique_ptr<PolyPanelBase> body;
@@ -1527,6 +1546,7 @@ private:
             default:                    body = std::make_unique<PrismPanel> (polyDev); break;
         }
         body->onTouch = [this] (te::AutomatableParameter& p) { oled.showParameter (p); };
+        if (window) body->setWindowRows (2);
         addAndMakeVisible (*body);
         oled.header = PolyDevice::modelNames()[bodyModel].toUpperCase() + "  /  POLY";
         resized();
@@ -1582,5 +1602,6 @@ private:
 };
 
 inline std::unique_ptr<juce::Component> PolyDevice::createDeviceView()     { return std::make_unique<PolyView> (*this); }
+inline std::unique_ptr<juce::Component> PolyDevice::createWindowView()     { return std::make_unique<SynthPanel::Zoomed> (std::make_unique<PolyView> (*this, true), 1.25f, getWindowViewSize()); }
 
 } // namespace elsewhere

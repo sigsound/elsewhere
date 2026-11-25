@@ -67,6 +67,8 @@ public:
     juce::String getSelectableDescription() override   { return "Elsewhere EQ"; }
     int getDeviceViewWidth() const override            { return 720; }
     std::unique_ptr<juce::Component> createDeviceView() override;
+    std::unique_ptr<juce::Component> createWindowView() override;
+    juce::Point<int> getWindowViewSize() const override    { return { 1040, 600 }; }
 
     void initialise (const te::PluginInitialisationInfo& info) override
     {
@@ -241,6 +243,9 @@ public:
         startTimerHz (30);
     }
 
+    /** Bigger handles, for when the graph has a window to itself. */
+    void setLarge (bool shouldBeLarge)      { handleSize = shouldBeLarge ? 16.0f : 12.0f; repaint(); }
+
     static juce::Colour bandColour (int b)
     {
         static const juce::uint32 c[] = { 0xff8b8e94, 0xffff6b6b, 0xffff9a3c, 0xfff3d34a, 0xff9ad64b, 0xff4cc9a6, 0xff4fb3ff, 0xff8b8e94 };
@@ -310,15 +315,15 @@ public:
             bool on = eq.bands[(size_t) b].on.get() > 0.5f;
             auto c = bandColour (b);
             g.setColour (on ? c : c.withAlpha (0.3f));
-            g.fillEllipse (juce::Rectangle<float> (12, 12).withCentre (pos));
+            g.fillEllipse (juce::Rectangle<float> (handleSize, handleSize).withCentre (pos));
             g.setColour (juce::Colours::black.withAlpha (0.6f));
-            g.setFont (juce::FontOptions (9.0f, juce::Font::bold));
-            g.drawText (juce::String (b + 1), juce::Rectangle<float> (12, 12).withCentre (pos).toNearestInt(), juce::Justification::centred);
+            g.setFont (juce::FontOptions (handleSize * 0.75f, juce::Font::bold));
+            g.drawText (juce::String (b + 1), juce::Rectangle<float> (handleSize, handleSize).withCentre (pos).toNearestInt(), juce::Justification::centred);
 
             if (b == dragging || b == hovered)
             {
                 g.setColour (Colours::text);
-                g.drawEllipse (juce::Rectangle<float> (16, 16).withCentre (pos), 1.5f);
+                g.drawEllipse (juce::Rectangle<float> (handleSize + 4.0f, handleSize + 4.0f).withCentre (pos), 1.5f);
             }
         }
 
@@ -405,6 +410,7 @@ public:
 private:
     EqDevice& eq;
     int dragging = -1, hovered = -1;
+    float handleSize = 12.0f;
     std::vector<float> spectrum;
     juce::dsp::FFT fft { 12 };
     std::vector<float> ring = std::vector<float> (4096, 0.0f), fftData = std::vector<float> (8192, 0.0f);
@@ -427,7 +433,7 @@ private:
     int findHandle (juce::Point<float> p) const
     {
         for (int b = EqDevice::numBands; --b >= 0;)
-            if (handlePos (b).getDistanceFrom (p) < 10.0f)
+            if (handlePos (b).getDistanceFrom (p) < handleSize - 2.0f)
                 return b;
 
         return -1;
@@ -509,6 +515,116 @@ private:
     juce::OwnedArray<DeviceUI::Toggle> toggles;
 };
 
+//==============================================================================
+/** The EQ in its own window: the graph across the top, and under it every band's own
+    controls, so a band can be set by number as well as by dragging its handle. */
+class EqWindowView : public juce::Component
+{
+public:
+    EqWindowView (EqDevice& d) : graph (d), output (d.outputGain.param(), "Output")
+    {
+        graph.setLarge (true);
+        addAndMakeVisible (graph);
+        addAndMakeVisible (output);
+
+        for (int b = 0; b < EqDevice::numBands; ++b)
+        {
+            auto& band = d.bands[(size_t) b];
+            const auto colour = EqGraph::bandColour (b);
+            auto* s = strips.add (new Strip());
+
+            s->on = std::make_unique<DeviceUI::Toggle> (band.on.param(), juce::String (b + 1) + "  " + EqDevice::bandInfo (b).name, colour);
+            s->freq = std::make_unique<DeviceUI::Knob> (band.freq.param(), "Freq", colour);
+            s->q = std::make_unique<DeviceUI::Knob> (band.q.param(), "Q", colour);
+
+            if (EqDevice::isFilter (b))
+                s->slope = std::make_unique<DeviceUI::Choice> (band.slope.param(), juce::StringArray { "12", "24", "48" }, colour);
+            else
+                s->gain = std::make_unique<DeviceUI::Knob> (band.gain.param(), "Gain", colour);
+
+            for (juce::Component* c : { (juce::Component*) s->on.get(), (juce::Component*) s->freq.get(), (juce::Component*) s->q.get(),
+                                        (juce::Component*) s->slope.get(), (juce::Component*) s->gain.get() })
+                if (c != nullptr)
+                    addAndMakeVisible (c);
+        }
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        for (auto* s : strips)
+        {
+            DeviceUI::paintSection (g, s->area, {});
+
+            if (s->slope != nullptr)
+            {
+                g.setColour (Colours::textDim);
+                g.setFont (juce::FontOptions (11.0f));
+                g.drawText ("Slope", s->slopeLabel, juce::Justification::centred);
+                g.drawText ("dB/oct", s->slopeLabel.translated (0, s->slopeLabel.getHeight() + s->slope->getHeight() + 4), juce::Justification::centred);
+            }
+        }
+
+        DeviceUI::paintSection (g, outputArea, "Output");
+
+        // (a band that is off is the colour of the panel it sits on, so each switch gets an edge)
+        g.setColour (Colours::textDim.withAlpha (0.3f));
+        for (auto* s : strips)
+            g.drawRoundedRectangle (s->on->getBounds().toFloat().reduced (0.5f), 3.5f, 1.0f);
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds();
+        auto lower = r.removeFromBottom (juce::jmin (206, r.getHeight() / 2));
+        r.removeFromBottom (8);
+        graph.setBounds (r);
+
+        outputArea = lower.removeFromRight (84);
+        output.setBounds (outputArea.reduced (6).withTrimmedTop (12).withSizeKeepingCentre (outputArea.getWidth() - 12, juce::jmin (96, outputArea.getHeight() - 30)));
+
+        const int w = lower.getWidth() / EqDevice::numBands;
+        for (auto* s : strips)
+        {
+            s->area = lower.removeFromLeft (w).withTrimmedRight (8);
+            auto c = s->area.reduced (6);
+            s->on->setBounds (c.removeFromTop (22));
+            c.removeFromTop (6);
+
+            auto lowerRow = c.removeFromBottom (juce::jmin (70, c.getHeight() / 2));
+            s->freq->setBounds (c.withSizeKeepingCentre (c.getWidth(), juce::jmin (96, c.getHeight())));
+
+            auto left = lowerRow.removeFromLeft (lowerRow.getWidth() / 2);
+            if (s->gain != nullptr)
+            {
+                s->gain->setBounds (left);
+            }
+            else
+            {
+                // (the slope sits where a bell's gain does, with its name over it like a knob's)
+                auto block = left.withSizeKeepingCentre (left.getWidth(), 14 + 22 + 4 + 14);
+                s->slopeLabel = block.removeFromTop (14);
+                s->slope->setBounds (block.removeFromTop (22));
+            }
+            s->q->setBounds (lowerRow);
+        }
+    }
+
+private:
+    struct Strip
+    {
+        std::unique_ptr<DeviceUI::Toggle> on;
+        std::unique_ptr<DeviceUI::Knob> freq, gain, q;
+        std::unique_ptr<DeviceUI::Choice> slope;
+        juce::Rectangle<int> area, slopeLabel;
+    };
+
+    EqGraph graph;
+    DeviceUI::Knob output;
+    juce::OwnedArray<Strip> strips;
+    juce::Rectangle<int> outputArea;
+};
+
 inline std::unique_ptr<juce::Component> EqDevice::createDeviceView()    { return std::make_unique<EqView> (*this); }
+inline std::unique_ptr<juce::Component> EqDevice::createWindowView()    { return std::make_unique<EqWindowView> (*this); }
 
 } // namespace elsewhere

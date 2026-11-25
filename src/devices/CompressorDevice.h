@@ -73,6 +73,8 @@ public:
     juce::String getSelectableDescription() override   { return "Elsewhere Compressor"; }
     int getDeviceViewWidth() const override            { return 600; }
     std::unique_ptr<juce::Component> createDeviceView() override;
+    std::unique_ptr<juce::Component> createWindowView() override;
+    juce::Point<int> getWindowViewSize() const override    { return { 920, 540 }; }
 
     void initialise (const te::PluginInitialisationInfo& info) override
     {
@@ -343,9 +345,23 @@ public:
             g.setColour (Colours::text);
             g.fillEllipse (juce::Rectangle<float> (8, 8).withCentre ({ toX (level), toY (juce::jmax (-60.0f, comp.getCurveDb (level))) }));
         }
+
+        if (showScale)
+        {
+            g.setColour (Colours::textDim);
+            g.setFont (juce::FontOptions (10.0f));
+            for (int db = -48; db < 0; db += 12)
+            {
+                g.drawText (juce::String (db), juce::Rectangle<float> (toX ((float) db) + 3.0f, r.getBottom() - 15.0f, 30.0f, 12.0f), juce::Justification::centredLeft);
+                g.drawText (juce::String (db), juce::Rectangle<float> (r.getX() + 5.0f, toY ((float) db) - 13.0f, 30.0f, 12.0f), juce::Justification::centredLeft);
+            }
+            g.drawText ("IN", r.reduced (6.0f, 3.0f), juce::Justification::bottomRight);
+            g.drawText ("OUT", r.reduced (6.0f, 3.0f), juce::Justification::topLeft);
+        }
     }
 
     float level = -100.0f;
+    bool showScale = false;     // numbers on the grid, when there is room for them
 
 private:
     CompressorDevice& comp;
@@ -438,7 +454,228 @@ private:
     }
 };
 
+//==============================================================================
+/** The last few seconds: how loud the input was, and how far the compressor pulled it down. */
+class CompressorHistory : public juce::Component
+{
+public:
+    static constexpr float seconds = 6.0f, perSecond = 30.0f, floorDb = -60.0f, deepestDb = 24.0f;
+
+    void push (float inputDb, float reductionDb)
+    {
+        in[(size_t) head] = inputDb;
+        reduction[(size_t) head] = reductionDb;
+        head = (head + 1) % length;
+        repaint();
+    }
+
+    float thresholdDb = 0.0f;
+
+    void paint (juce::Graphics& g) override
+    {
+        auto r = getLocalBounds().toFloat();
+        g.setColour (Colours::display);
+        g.fillRoundedRectangle (r, 4.0f);
+
+        auto plot = r.reduced (4.0f).withTrimmedTop (14.0f);    // (its name goes above the line)
+        auto levelY = [&] (float db)    { return juce::jmap (juce::jlimit (floorDb, 0.0f, db), floorDb, 0.0f, plot.getBottom(), plot.getY()); };
+        auto xAt = [&] (int i)          { return plot.getX() + plot.getWidth() * (float) i / (float) (length - 1); };
+
+        g.setFont (juce::FontOptions (10.0f));
+        for (int db = -48; db < 0; db += 12)
+        {
+            g.setColour (Colours::gridLine);
+            g.drawHorizontalLine ((int) levelY ((float) db), r.getX(), r.getRight());
+            g.setColour (Colours::textDim);
+            g.drawText (juce::String (db), juce::Rectangle<float> (r.getX() + 5.0f, levelY ((float) db) - 13.0f, 30.0f, 12.0f), juce::Justification::centredLeft);
+        }
+
+        // Input level, oldest on the left
+        juce::Path level;
+        level.startNewSubPath (plot.getX(), plot.getBottom());
+        for (int i = 0; i < length; ++i)
+            level.lineTo (xAt (i), levelY (in[(size_t) ((head + i) % length)]));
+        level.lineTo (plot.getRight(), plot.getBottom());
+        level.closeSubPath();
+        g.setColour (Colours::textDim.withAlpha (0.3f));
+        g.fillPath (level);
+
+        g.setColour (Colours::accent.withAlpha (0.35f));
+        g.drawHorizontalLine ((int) levelY (thresholdDb), r.getX(), r.getRight());
+
+        // Gain reduction hangs from the top, as on the meter
+        juce::Path pulled;
+        pulled.startNewSubPath (plot.getX(), plot.getY());
+        for (int i = 0; i < length; ++i)
+            pulled.lineTo (xAt (i), plot.getY() + plot.getHeight() * juce::jlimit (0.0f, 1.0f, reduction[(size_t) ((head + i) % length)] / deepestDb));
+        auto edge = pulled;
+        pulled.lineTo (plot.getRight(), plot.getY());
+        pulled.closeSubPath();
+        g.setColour (Colours::accent.withAlpha (0.25f));
+        g.fillPath (pulled);
+        g.setColour (Colours::accent);
+        g.strokePath (edge, juce::PathStrokeType (1.5f));
+
+        g.setColour (Colours::textDim);
+        g.drawText ("GAIN REDUCTION", r.reduced (6.0f, 4.0f), juce::Justification::topRight);
+        g.drawText ("INPUT", r.reduced (6.0f, 3.0f), juce::Justification::bottomRight);
+    }
+
+private:
+    static constexpr int length = (int) (seconds * perSecond);
+    std::array<float, (size_t) length> in = filled (-100.0f), reduction = filled (0.0f);
+    int head = 0;
+
+    static std::array<float, (size_t) length> filled (float v)
+    {
+        std::array<float, (size_t) length> a;
+        a.fill (v);
+        return a;
+    }
+};
+
+//==============================================================================
+/** The compressor in its own window: the curve, the last few seconds and the meters across
+    the top, the controls underneath in the order the sound meets them. */
+class CompressorWindowView : public juce::Component, private juce::Timer
+{
+public:
+    CompressorWindowView (CompressorDevice& d)
+        : comp (d), curve (d),
+          modelChoice (d.model.param(), CompressorDevice::modelNames()),
+          threshold (d.threshold.param()), ratio (d.ratio.param()), attack (d.attack.param()), release (d.release.param()),
+          knee (d.knee.param()), makeup (d.makeup.param()), mix (d.mix.param()), scHpf (d.scHpf.param(), "SC HPF"),
+          drive (d.drive.param(), "Drive", Colours::record), output (d.output.param()),
+          autoGain (d.autoGain.param(), "Auto"), listen (d.listen.param(), "Listen")
+    {
+        for (juce::Component* c : { (juce::Component*) &curve, (juce::Component*) &history, (juce::Component*) &modelChoice,
+                                    (juce::Component*) &threshold, (juce::Component*) &ratio, (juce::Component*) &attack,
+                                    (juce::Component*) &release, (juce::Component*) &knee, (juce::Component*) &makeup,
+                                    (juce::Component*) &mix, (juce::Component*) &scHpf, (juce::Component*) &drive,
+                                    (juce::Component*) &output, (juce::Component*) &autoGain, (juce::Component*) &listen,
+                                    (juce::Component*) &inMeter, (juce::Component*) &grMeter, (juce::Component*) &outMeter })
+            addAndMakeVisible (c);
+
+        curve.showScale = true;
+        grMeter.invert = true;
+        inMeter.getDb  = [this] { return inDb; };
+        outMeter.getDb = [this] { return outDb; };
+        grMeter.getDb  = [this] { return -grDb; };
+        startTimerHz ((int) CompressorHistory::perSecond);
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        DeviceUI::paintSection (g, levelArea, "Level");
+        DeviceUI::paintSection (g, timeArea, "Time");
+        DeviceUI::paintSection (g, detectorArea, "Detector");
+        DeviceUI::paintSection (g, outputArea, "Output");
+        DeviceUI::paintSection (g, meterArea, {});
+
+        // (a switch that is off is the colour of the panel it sits on, so each gets an edge)
+        g.setColour (Colours::textDim.withAlpha (0.3f));
+        for (auto* c : std::initializer_list<juce::Component*> { &autoGain, &listen })
+            g.drawRoundedRectangle (c->getBounds().toFloat().reduced (0.5f), 3.5f, 1.0f);
+
+        auto fmt = [] (float db) { return db <= -99.0f ? juce::String ("--") : juce::String (db, 1); };
+        const juce::String names[] = { "IN", "GR", "OUT" };
+        const juce::String values[] = { fmt (inHeld), juce::String (grHeld, 1), fmt (outHeld) };
+        auto m = meterArea.reduced (6);
+        const int w = m.getWidth() / 3;
+
+        for (int i = 0; i < 3; ++i)
+        {
+            auto column = m.removeFromLeft (w);
+            g.setColour (Colours::textDim);
+            g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+            g.drawText (names[i], column.removeFromTop (14), juce::Justification::centred);
+            g.setColour (Colours::text);
+            g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+            g.drawText (values[i], column.removeFromBottom (14), juce::Justification::centred);
+        }
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds();
+        modelChoice.setBounds (r.removeFromTop (28));
+        r.removeFromTop (8);
+
+        auto lower = r.removeFromBottom (juce::jmin (132, r.getHeight() / 2));
+        r.removeFromBottom (8);
+
+        // Curve, history, meters
+        curve.setBounds (r.removeFromLeft (juce::jmin (r.getHeight(), r.getWidth() * 2 / 5)));
+        r.removeFromLeft (8);
+        meterArea = r.removeFromRight (132);
+        r.removeFromRight (8);
+        history.setBounds (r);
+
+        auto m = meterArea.reduced (6).withTrimmedTop (16).withTrimmedBottom (16);
+        const int mw = m.getWidth() / 3;
+        inMeter.setBounds (m.removeFromLeft (mw).reduced (9, 0));
+        grMeter.setBounds (m.removeFromLeft (mw).reduced (9, 0));
+        outMeter.setBounds (m.removeFromLeft (mw).reduced (9, 0));
+
+        // Twelve places across: ten knobs and the two switches
+        const int gap = 8;
+        const int unit = (lower.getWidth() - 3 * gap) / 12;
+        levelArea = lower.removeFromLeft (unit * 3);    lower.removeFromLeft (gap);
+        timeArea = lower.removeFromLeft (unit * 2);     lower.removeFromLeft (gap);
+        detectorArea = lower.removeFromLeft (unit * 2); lower.removeFromLeft (gap);
+        outputArea = lower;
+
+        auto inside = [] (juce::Rectangle<int> area)
+        {
+            area = area.reduced (6).withTrimmedTop (12);
+            return area.withSizeKeepingCentre (area.getWidth(), juce::jmin (96, area.getHeight()));
+        };
+        auto across = [] (juce::Rectangle<int> area, std::initializer_list<juce::Component*> parts, int places)
+        {
+            const int w = area.getWidth() / places;
+            for (auto* c : parts)
+            {
+                auto cell = area.removeFromLeft (w);
+                c->setBounds (dynamic_cast<DeviceUI::Toggle*> (c) != nullptr ? cell.withSizeKeepingCentre (juce::jmin (64, w - 8), 24) : cell);
+            }
+        };
+
+        across (inside (levelArea), { &threshold, &ratio, &knee }, 3);
+        across (inside (timeArea), { &attack, &release }, 2);
+        across (inside (detectorArea), { &scHpf, &listen }, 2);
+        across (inside (outputArea), { &makeup, &autoGain, &drive, &mix, &output }, 5);
+    }
+
+private:
+    CompressorDevice& comp;
+    CompressorCurve curve;
+    CompressorHistory history;
+    DeviceUI::Choice modelChoice;
+    DeviceUI::Knob threshold, ratio, attack, release, knee, makeup, mix, scHpf, drive, output;
+    DeviceUI::Toggle autoGain, listen;
+    DeviceUI::Meter inMeter, grMeter, outMeter;
+    juce::Rectangle<int> levelArea, timeArea, detectorArea, outputArea, meterArea;
+    float inDb = -100.0f, outDb = -100.0f, grDb = 0.0f;
+    float inHeld = -100.0f, outHeld = -100.0f, grHeld = 0.0f;     // the numbers under the meters, slowed to be readable
+
+    void timerCallback() override
+    {
+        inDb = comp.takeInputDb();
+        outDb = comp.takeOutputDb();
+        grDb = comp.takeGainReductionDb();
+        curve.level = inDb;
+        history.thresholdDb = comp.threshold.get();
+        history.push (inDb, -grDb);
+
+        inHeld = juce::jmax (inDb, inHeld - 0.5f);
+        outHeld = juce::jmax (outDb, outHeld - 0.5f);
+        grHeld = juce::jmin (grDb, grHeld * 0.95f);
+        repaint (meterArea);
+    }
+};
+
 inline std::unique_ptr<juce::Component> CompressorDevice::createDeviceView()    { return std::make_unique<CompressorView> (*this); }
+inline std::unique_ptr<juce::Component> CompressorDevice::createWindowView()    { return std::make_unique<CompressorWindowView> (*this); }
 
 JUCE_END_IGNORE_WARNINGS_GCC_LIKE
 } // namespace elsewhere

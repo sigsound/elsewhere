@@ -63,6 +63,8 @@ public:
     juce::String getSelectableDescription() override   { return "Elsewhere Amp"; }
     int getDeviceViewWidth() const override            { return 670; }
     std::unique_ptr<juce::Component> createDeviceView() override;
+    std::unique_ptr<juce::Component> createWindowView() override;
+    juce::Point<int> getWindowViewSize() const override    { return { 920, 560 }; }
 
     double getLatencySeconds() override
     {
@@ -600,8 +602,9 @@ class AmpView : public juce::Component,
                 private juce::Timer
 {
 public:
-    AmpView (AmpDevice& d)
-        : amp (d),
+    /** `inWindow`: the roomier layout for the device's own window, the head standing on its cabinet. */
+    AmpView (AmpDevice& d, bool inWindow = false)
+        : amp (d), window (inWindow),
           modelChoice (d.model.param(), AmpDevice::modelNames(), Colours::deviceAmp),
           cabChoice (d.cab.param(), AmpDevice::cabShortNames(), Colours::deviceAmp)
     {
@@ -655,9 +658,21 @@ public:
 
         const auto gold = Theme::isLight() ? Colours::deviceAmp.darker (0.8f) : Colours::deviceAmp;
         g.setColour (gold);
-        g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+        g.setFont (juce::FontOptions (window ? 17.0f : 13.0f, juce::Font::bold));
         g.drawText ("ELSEWHERE  " + AmpDevice::modelNames()[juce::roundToInt (amp.model.get())].toUpperCase(),
-                    ampArea.withHeight (20).translated (10, 4), juce::Justification::centredLeft);
+                    window ? ampArea.reduced (14, 10).removeFromTop (26) : ampArea.withHeight (20).translated (10, 4),
+                    juce::Justification::centredLeft);
+
+        if (window)
+        {
+            DeviceUI::paintSection (g, cabinetSection, "Cabinet");
+            DeviceUI::paintSection (g, micSection, "Mic");
+            DeviceUI::paintSection (g, levelSection, "Level");
+
+            // (the meter at rest is the colour of the panel it sits on)
+            g.setColour (Colours::textDim.withAlpha (0.3f));
+            g.drawRoundedRectangle (meter.getBounds().toFloat().expanded (0.5f), 2.5f, 1.0f);
+        }
 
         // Cabinet: grille with the cabinet's frequency response drawn on it
         auto cab = cabArea.toFloat();
@@ -677,7 +692,11 @@ public:
             g.drawVerticalLine ((int) x, grille.getY(), grille.getBottom());
 
         const int cabType = juce::roundToInt (amp.cab.get());
-        g.setFont (juce::FontOptions (10.0f));
+
+        if (window)
+            paintSpeakers (g, grille, cabType, sk, gold);
+
+        g.setFont (juce::FontOptions (window ? 11.0f : 10.0f));
 
         if (cabType == AmpDevice::cabOff)
         {
@@ -702,6 +721,12 @@ public:
 
     void resized() override
     {
+        if (window)
+        {
+            layoutWindow();
+            return;
+        }
+
         auto r = getLocalBounds();
         cabArea = r.removeFromRight (260);
         r.removeFromRight (8);
@@ -760,6 +785,8 @@ public:
 
 private:
     AmpDevice& amp;
+    const bool window;
+    juce::Rectangle<int> cabinetSection, micSection, levelSection;
     DeviceUI::Choice modelChoice, cabChoice;
     juce::OwnedArray<DeviceUI::Knob> ampKnobs, cabKnobs;
     DeviceUI::Meter meter;
@@ -780,6 +807,93 @@ private:
         return f.hasFileExtension ("wav;aif;aiff;flac") ? f : juce::File();
     }
 
+    /** The head across the top; under it the cabinet, with what feeds and follows it alongside. */
+    void layoutWindow()
+    {
+        auto r = getLocalBounds();
+        ampArea = r.removeFromTop (juce::jlimit (150, 200, r.getHeight() / 3));
+        r.removeFromTop (8);
+        auto side = r.removeFromRight (juce::jlimit (250, 320, r.getWidth() * 3 / 10));
+        r.removeFromRight (8);
+        cabArea = r;
+        responseArea = cabArea.reduced (14);
+
+        auto a = ampArea.reduced (14, 10);
+        auto top = a.removeFromTop (26);
+        modelChoice.setBounds (top.removeFromRight (juce::jmin (440, top.getWidth() * 3 / 5)));
+        a.removeFromTop (6);
+        auto kr = a.withSizeKeepingCentre (juce::jmin (a.getWidth(), 6 * 140), juce::jmin (a.getHeight(), 112));
+        const int kw = kr.getWidth() / 6;
+        for (auto* k : ampKnobs)
+            k->setBounds (kr.removeFromLeft (kw));
+
+        const bool custom = juce::roundToInt (amp.cab.get()) == AmpDevice::cabCustom;
+        cabinetSection = side.removeFromTop (custom ? 86 : 58);
+        side.removeFromTop (8);
+        micSection = side.removeFromTop ((side.getHeight() - 8) / 2);
+        side.removeFromTop (8);
+        levelSection = side;
+
+        auto c = cabinetSection.reduced (8).withTrimmedTop (12);
+        cabChoice.setBounds (c.removeFromTop (24));
+        c.removeFromTop (6);
+        loadButton.setVisible (custom);
+        if (custom)
+            loadButton.setBounds (c.removeFromTop (22).removeFromRight (100));
+
+        auto pair = [] (juce::Rectangle<int> area, DeviceUI::Knob* first, DeviceUI::Knob* second)
+        {
+            area = area.reduced (8).withTrimmedTop (12);
+            area = area.withSizeKeepingCentre (area.getWidth(), juce::jmin (100, area.getHeight()));
+            first->setBounds (area.removeFromLeft (area.getWidth() / 2));
+            second->setBounds (area);
+        };
+
+        pair (micSection, cabKnobs[0], cabKnobs[1]);
+        auto level = levelSection;
+        meter.setBounds (level.removeFromRight (30).reduced (8, 0).withTrimmedTop (22).withTrimmedBottom (10));
+        pair (level, cabKnobs[2], cabKnobs[3]);
+        updateResponse();
+    }
+
+    /** The cabinet's speakers behind the grille, and the mic where Mic Position has put it. */
+    void paintSpeakers (juce::Graphics& g, juce::Rectangle<float> grille, int cabType, const Skin& sk, juce::Colour gold) const
+    {
+        const int cols = cabType == AmpDevice::cab2x12 || cabType == AmpDevice::cab4x12 ? 2 : 1;
+        const int rows = cabType == AmpDevice::cab4x12 ? 2 : 1;
+        if (cabType == AmpDevice::cabOff || cabType == AmpDevice::cabCustom)
+            return;
+
+        auto inner = grille.reduced (10.0f);
+        const float cell = juce::jmin (inner.getWidth() / (float) cols, inner.getHeight() / (float) rows);
+        const float radius = cell * (cabType == AmpDevice::cabBass ? 0.48f : 0.43f);
+        auto block = juce::Rectangle<float> (cell * (float) cols, cell * (float) rows).withCentre (inner.getCentre());
+
+        for (int y = 0; y < rows; ++y)
+            for (int x = 0; x < cols; ++x)
+            {
+                const juce::Point<float> c { block.getX() + cell * ((float) x + 0.5f), block.getY() + cell * ((float) y + 0.5f) };
+                auto ring = [&] (float k) { return juce::Rectangle<float> (radius * 2.0f * k, radius * 2.0f * k).withCentre (c); };
+                g.setColour (sk.tolex.withAlpha (0.45f));
+                g.fillEllipse (ring (1.0f));
+                g.setColour (sk.trim);
+                g.drawEllipse (ring (1.0f), 1.5f);
+                g.drawEllipse (ring (0.86f), 1.0f);
+                g.setColour (sk.trim.withAlpha (0.6f));
+                g.fillEllipse (ring (0.24f));
+
+                if (x == 0 && y == 0)
+                {
+                    // Centre of the cone is bright, the edge is dark: the mic slides between them
+                    const juce::Point<float> mic { c.x + radius * 0.84f * amp.mic.get() / 100.0f, c.y };
+                    g.setColour (gold);
+                    g.fillEllipse (juce::Rectangle<float> (10.0f, 10.0f).withCentre (mic));
+                    g.setColour (sk.tolex);
+                    g.drawEllipse (juce::Rectangle<float> (10.0f, 10.0f).withCentre (mic), 1.5f);
+                }
+            }
+    }
+
     /** Frequency response of the current IR, 40 Hz - 16 kHz, drawn over the grille. */
     void updateResponse()
     {
@@ -798,10 +912,24 @@ private:
         for (int px = 0; px <= (int) area.getWidth(); px += 2)
         {
             const double f = 40.0 * std::pow (400.0, px / (double) area.getWidth());
-            const auto bin = juce::jlimit (1, fft.size() / 2 - 1, (int) std::round (f / sr * fft.size()));
+            const double exact = f / sr * fft.size();
+            const auto bin = juce::jlimit (1, fft.size() / 2 - 1, (int) std::round (exact));
             // Light smoothing over neighbouring bins
-            double p = 0.0;
-            for (int k = -2; k <= 2; ++k) p += std::norm (x[(size_t) juce::jlimit (1, fft.size() / 2 - 1, bin + k)]);
+            auto around = [&] (int centre)
+            {
+                double sum = 0.0;
+                for (int k = -2; k <= 2; ++k) sum += std::norm (x[(size_t) juce::jlimit (1, fft.size() / 2 - 1, centre + k)]);
+                return sum;
+            };
+            double p = around (bin);
+
+            // Drawn large, the bass end shows the steps from one bin to the next: go between them
+            if (window)
+            {
+                const int below = (int) std::floor (exact);
+                const double t = exact - below;
+                p = around (below) * (1.0 - t) + around (below + 1) * t;
+            }
             const float db = (float) (10.0 * std::log10 (p / 5.0 + 1.0e-12));
             const float y = juce::jmap (juce::jlimit (-36.0f, 12.0f, db), 12.0f, -36.0f, area.getY(), area.getBottom());
             if (px == 0) response.startNewSubPath (area.getX() + (float) px, y); else response.lineTo (area.getX() + (float) px, y);
@@ -832,5 +960,6 @@ private:
 };
 
 inline std::unique_ptr<juce::Component> AmpDevice::createDeviceView()    { return std::make_unique<AmpView> (*this); }
+inline std::unique_ptr<juce::Component> AmpDevice::createWindowView()    { return std::make_unique<AmpView> (*this, true); }
 
 } // namespace elsewhere

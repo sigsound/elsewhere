@@ -174,6 +174,8 @@ public:
     juce::String getSelectableDescription() override   { return "Elsewhere Mono"; }
     int getDeviceViewWidth() const override            { return 1400; }
     std::unique_ptr<juce::Component> createDeviceView() override;
+    std::unique_ptr<juce::Component> createWindowView() override;
+    juce::Point<int> getWindowViewSize() const override    { return { 1180, 620 }; }
 
     bool isSynth() override                             { return true; }
     bool takesMidiInput() override                      { return true; }
@@ -869,7 +871,8 @@ public:
             for (int i = 0; i < 5; ++i)
             {
                 auto r = c.removeFromTop (rowH);
-                mixToggles[(size_t) i]->setBounds (r.removeFromLeft (70));
+                // (no taller than in the chain: a toggle's dot takes a square off its left)
+                mixToggles[(size_t) i]->setBounds (r.removeFromLeft (70).withSizeKeepingCentre (70, juce::jmin (rowH, 30)));
                 if (i == 4)
                 {
                     noiseColour->setBounds (r.removeFromRight (30).withSizeKeepingCentre (30, juce::jmin (16, rowH - 4)));
@@ -1073,8 +1076,10 @@ private:
 class MonoView : public MonoPanelBase, private juce::Timer
 {
 public:
-    MonoView (MonoDevice& d) : mono (d)
+    /** `inWindow`: the layout for the device's own window (a big display, the sections in two rows). */
+    MonoView (MonoDevice& d, bool inWindow = false) : mono (d), window (inWindow)
     {
+        if (window) setWindowRows (2);
         modelSel = selector (d.model, MonoDevice::modelNames(), Colours::accent);
 
         oled.readScope = [this] (float* dst, int n) { mono.scope.read (dst, n); };
@@ -1109,13 +1114,19 @@ public:
     void resized() override
     {
         auto r = getLocalBounds();
-        const int gap = 6;
+        const int gap = window ? 8 : 6;
 
-        auto display = r.removeFromLeft (200);
-        modelSel->setBounds (display.removeFromTop (20));
-        display.removeFromTop (4);
+        auto display = r.removeFromLeft (window ? juce::jmin (300, r.getWidth() * 32 / 100) : 200);
+        modelSel->setBounds (display.removeFromTop (window ? 22 : 20));
+        display.removeFromTop (window ? 6 : 4);
+        if (window)
+        {
+            // The output sits under the display, leaving the rest of the window to the model's panel
+            outArea = display.removeFromBottom (186);
+            display.removeFromBottom (gap);
+        }
         auto nav = display.removeFromBottom (24);
-        display.removeFromBottom (4);
+        display.removeFromBottom (window ? 6 : 4);
         oled.setBounds (display);
         prevButton.setBounds (nav.removeFromLeft (30));
         nav.removeFromLeft (4);
@@ -1124,8 +1135,13 @@ public:
         patchButton.setBounds (nav);
         r.removeFromLeft (gap);
 
-        outArea = r.removeFromRight (186);
-        r.removeFromRight (gap);
+        if (! window)
+        {
+            outArea = r.removeFromRight (186);
+            r.removeFromRight (gap);
+        }
+        // A narrow window: a third row, so the sections keep their width
+        if (window && body != nullptr) body->setWindowRows (r.getWidth() < 500 ? 3 : 2);
         if (body != nullptr) body->setBounds (r);
         sections = { outArea };
 
@@ -1140,6 +1156,7 @@ public:
 
 private:
     MonoDevice& mono;
+    const bool window;
     SynthPanel::Oled oled;
     juce::TextButton prevButton { juce::String::fromUTF8 ("\xe2\x97\x80") }, nextButton { juce::String::fromUTF8 ("\xe2\x96\xb6") }, patchButton { "Patches" };
     std::unique_ptr<MonoPanelBase> body;
@@ -1161,6 +1178,7 @@ private:
             default:                    body = std::make_unique<SeventyPanel> (mono); break;
         }
         body->onTouch = [this] (te::AutomatableParameter& p) { oled.showParameter (p); };
+        if (window) body->setWindowRows (2);
         addAndMakeVisible (*body);
         oled.header = MonoDevice::modelNames()[bodyModel].toUpperCase() + "  /  MONO";
         resized();
@@ -1216,5 +1234,6 @@ private:
 };
 
 inline std::unique_ptr<juce::Component> MonoDevice::createDeviceView()     { return std::make_unique<MonoView> (*this); }
+inline std::unique_ptr<juce::Component> MonoDevice::createWindowView()     { return std::make_unique<SynthPanel::Zoomed> (std::make_unique<MonoView> (*this, true), 1.25f, getWindowViewSize()); }
 
 } // namespace elsewhere

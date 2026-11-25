@@ -95,6 +95,8 @@ public:
     juce::String getSelectableDescription() override   { return "Elsewhere Organic"; }
     int getDeviceViewWidth() const override            { return 1380; }
     std::unique_ptr<juce::Component> createDeviceView() override;
+    std::unique_ptr<juce::Component> createWindowView() override;
+    juce::Point<int> getWindowViewSize() const override    { return { 1180, 720 }; }
 
     bool isSynth() override                             { return true; }
     bool takesMidiInput() override                      { return true; }
