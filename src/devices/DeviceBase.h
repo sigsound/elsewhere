@@ -37,6 +37,13 @@ public:
     /** Width the panel would like in the device chain. */
     virtual int getDeviceViewWidth() const          { return 360; }
 
+    /** A roomier panel for the device's own window, which has the space the chain doesn't.
+        Devices without one show the chain's panel there too. */
+    virtual std::unique_ptr<juce::Component> createWindowView()     { return {}; }
+
+    /** The size the window panel would like to open at. */
+    virtual juce::Point<int> getWindowViewSize() const              { return {}; }
+
     //==============================================================================
     int getNumOutputChannelsGivenInputs (int n) override   { return juce::jmin (n, 2); }
     BusLayout getBusses() const override                   { return BusLayout::singleStereoInOut(); }
@@ -410,6 +417,14 @@ struct ElsewhereDeviceEditor : public te::Plugin::EditorComponent
 {
     ElsewhereDeviceEditor (ElsewhereDevice& d) : device (d)
     {
+        if ((windowView = d.createWindowView()) != nullptr)
+        {
+            addAndMakeVisible (*windowView);
+            const auto size = d.getWindowViewSize();
+            setSize (size.x + 2 * pad, size.y + 2 * pad);
+            return;
+        }
+
         addRowView();
         setSize (juce::jmax (420, naturalWidth() + 2 * pad), 300);
     }
@@ -420,6 +435,12 @@ struct ElsewhereDeviceEditor : public te::Plugin::EditorComponent
 
     void resized() override
     {
+        if (windowView != nullptr)
+        {
+            windowView->setBounds (getLocalBounds().reduced (pad));
+            return;
+        }
+
         const int natural = naturalWidth();
         const int avail = getWidth() - 2 * pad;
 
@@ -453,6 +474,7 @@ private:
     static constexpr int pad = 8, gap = 8, rowH = 174;
     ElsewhereDevice& device;
     std::vector<std::unique_ptr<juce::Component>> views, clips;
+    std::unique_ptr<juce::Component> windowView;    // the device's own window panel, when it has one
     bool wrapped = false;
 
     int naturalWidth() const

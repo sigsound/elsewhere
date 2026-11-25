@@ -561,6 +561,8 @@ public:
     juce::String getSelectableDescription() override   { return "Elsewhere Steps"; }
     int getDeviceViewWidth() const override            { return 940; }
     std::unique_ptr<juce::Component> createDeviceView() override;
+    std::unique_ptr<juce::Component> createWindowView() override;
+    juce::Point<int> getWindowViewSize() const override    { return { 1120, 640 }; }
 
     void initialise (const te::PluginInitialisationInfo& info) override
     {
@@ -910,10 +912,24 @@ public:
     void setLane (int l)        { lane = l; repaint(); }
     int getLane() const         { return lane; }
 
+    /** Without the row of on/off buttons: for a lane stacked under another grid that has them. */
+    void setShowsOnRow (bool shouldShow)    { showOnRow = shouldShow; repaint(); }
+
+    /** Keeps its columns in line with grids showing the other lanes. */
+    void setLinedUpWithAllLanes (bool b)    { allLanes = b; repaint(); }
+
     /** 16 across until something needs more. */
     int columns() const
     {
-        return dev.patternSteps() > 16 || dev.stepsInLane (lane) > 16 ? 32 : 16;
+        if (dev.patternSteps() > 16 || dev.stepsInLane (lane) > 16)
+            return 32;
+
+        if (allLanes)
+            for (int l = 0; l < StepsDevice::numLanes; ++l)
+                if (dev.stepsInLane (l) > 16)
+                    return 32;
+
+        return 16;
     }
 
     void paint (juce::Graphics& g) override
@@ -933,18 +949,21 @@ public:
             auto col = cell (i);
 
             // On/off
-            auto onBox = col.withHeight (onH).reduced (1.5f);
-            g.setColour ((on ? Colours::accent : Colours::panelLight).withMultipliedAlpha (i < len ? 1.0f : 0.3f));
-            g.fillRoundedRectangle (onBox, 3.0f);
-            if (i == playing)
+            if (showOnRow)
             {
-                g.setColour (Colours::text);
-                g.drawRoundedRectangle (onBox, 3.0f, 2.0f);
-            }
-            if (i % 4 == 0)
-            {
-                g.setColour (on && i < len ? Colours::textInverse : Colours::textDim);
-                g.drawText (juce::String (i + 1), onBox.toNearestInt(), juce::Justification::centred);
+                auto onBox = col.withHeight (onH).reduced (1.5f);
+                g.setColour ((on ? Colours::accent : Colours::panelLight).withMultipliedAlpha (i < len ? 1.0f : 0.3f));
+                g.fillRoundedRectangle (onBox, 3.0f);
+                if (i == playing)
+                {
+                    g.setColour (Colours::text);
+                    g.drawRoundedRectangle (onBox, 3.0f, 2.0f);
+                }
+                if (i % 4 == 0)
+                {
+                    g.setColour (on && i < len ? Colours::textInverse : Colours::textDim);
+                    g.drawText (juce::String (i + 1), onBox.toNearestInt(), juce::Justification::centred);
+                }
             }
 
             // The lane's bar: from the middle for values that go both ways, otherwise from the bottom
@@ -983,7 +1002,7 @@ public:
         auto i = stepAt (e.position.x);
         if (i < 0) return;
 
-        onRow = e.position.y < onH + 2.0f;
+        onRow = showOnRow && e.position.y < onH + 2.0f;
 
         if (onRow)
         {
@@ -1030,10 +1049,10 @@ private:
     StepsDevice& dev;
     static constexpr float onH = 20.0f;
     int lane = StepsDevice::pitchLane;
-    bool onRow = false;
+    bool onRow = false, showOnRow = true, allLanes = false;
     float paintValue = 1.0f;
     long long lastCount = -2;
-    int lastCols = 0;
+    int lastCols = 0, sinceRepaint = 0;
 
     juce::Rectangle<float> cell (int i) const
     {
@@ -1041,7 +1060,7 @@ private:
         return { w * (float) i, 0.0f, w, (float) getHeight() };
     }
 
-    juce::Rectangle<float> laneBox (int i) const     { return cell (i).withTrimmedTop (onH + 4.0f).reduced (1.5f, 0.0f); }
+    juce::Rectangle<float> laneBox (int i) const     { return cell (i).withTrimmedTop (showOnRow ? onH + 4.0f : 0.0f).reduced (1.5f, 0.0f); }
 
     int stepAt (float x) const
     {
@@ -1083,9 +1102,10 @@ private:
 
     void timerCallback() override
     {
+        // (also follows changes made from another view of the same device)
         const auto c = dev.getCurrentCount();
         const int cols = columns();
-        if (c != lastCount || cols != lastCols) { lastCount = c; lastCols = cols; repaint(); }
+        if (c != lastCount || cols != lastCols || ++sinceRepaint >= 6) { lastCount = c; lastCols = cols; sinceRepaint = 0; repaint(); }
     }
 };
 
@@ -1122,6 +1142,95 @@ public:
         if (onChange) onChange (current);
     }
 };
+
+/** The sequencer's menus, shared by its panel in the chain and its window. */
+namespace StepsMenus
+{
+    inline void set (te::AutomatableParameter& p, float v)
+    {
+        p.parameterChangeGestureBegin();
+        p.setParameter (v, juce::sendNotification);
+        p.parameterChangeGestureEnd();
+    }
+
+    inline void showScale (StepsDevice& dev, juce::Component& target)
+    {
+        juce::PopupMenu m;
+        const int current = juce::roundToInt (dev.scale.get());
+        for (int i = 0; i < (int) StepsDevice::scales().size(); ++i)
+            m.addItem (i + 1, StepsDevice::scales()[(size_t) i].name, true, i == current);
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&target), [ref = te::Plugin::Ptr (&dev)] (int result)
+        {
+            if (result > 0)
+                set (static_cast<StepsDevice*> (ref.get())->scale.param(), (float) (result - 1));
+        });
+    }
+
+    inline void showLaneSteps (StepsDevice& dev, int lane, juce::Component& target)
+    {
+        juce::PopupMenu m;
+        const int current = juce::roundToInt (dev.laneSteps[(size_t) lane].get());
+        m.addItem (1, "Same as the Pattern", true, current == 0);
+        m.addSeparator();
+        for (int i = 1; i <= StepsDevice::numSteps; ++i)
+        {
+            if (i == 17) m.addColumnBreak();
+            m.addItem (i + 1, juce::String (i) + (i == 1 ? " step" : " steps"), true, current == i);
+        }
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&target), [ref = te::Plugin::Ptr (&dev), lane] (int result)
+        {
+            if (result > 0)
+                set (static_cast<StepsDevice*> (ref.get())->laneSteps[(size_t) lane].param(), (float) (result - 1));
+        });
+    }
+
+    /** Things to do to one lane (lane >= 0), to the whole pattern (wholePattern), or both. */
+    inline void showTools (StepsDevice& dev, int lane, bool wholePattern, juce::Component& target)
+    {
+        juce::PopupMenu m;
+
+        if (lane >= 0)
+        {
+            const auto name = StepsDevice::laneNames()[lane];
+            m.addItem (1, "Randomise " + name);
+            m.addItem (6, "Reset " + name);
+        }
+
+        if (wholePattern)
+        {
+            if (lane >= 0) m.addSeparator();
+            m.addItem (2, "Randomise Which Steps Play");
+            m.addSeparator();
+            m.addItem (3, "Shift Pattern Left");
+            m.addItem (4, "Shift Pattern Right");
+            m.addItem (5, "Double Pattern", dev.canDouble());
+            m.addSeparator();
+            m.addItem (7, "Start Over");
+        }
+
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&target), [ref = te::Plugin::Ptr (&dev), lane] (int result)
+        {
+            auto& d = *static_cast<StepsDevice*> (ref.get());
+            switch (result)
+            {
+                case 1: d.randomiseLane (lane); break;
+                case 2: d.randomiseSteps(); break;
+                case 3: d.shift (-1); break;
+                case 4: d.shift (1); break;
+                case 5: d.doubleLength(); break;
+                case 6: d.resetLane (lane); break;
+                case 7: d.loadDefaults(); break;
+                default: break;
+            }
+        });
+    }
+
+    inline juce::String laneStepsText (StepsDevice& dev, int lane)
+    {
+        const int own = juce::roundToInt (dev.laneSteps[(size_t) lane].get());
+        return own > 0 ? juce::String (own) + (own == 1 ? " step" : " steps") : juce::String ("Pattern");
+    }
+}
 
 class StepsView : public juce::Component, private juce::Timer
 {
@@ -1190,77 +1299,9 @@ private:
     DeviceUI::Toggle follow;
     juce::TextButton scaleButton, laneStepsButton, toolsButton { "Tools" };
 
-    static void set (te::AutomatableParameter& p, float v)
-    {
-        p.parameterChangeGestureBegin();
-        p.setParameter (v, juce::sendNotification);
-        p.parameterChangeGestureEnd();
-    }
-
-    void showScaleMenu()
-    {
-        juce::PopupMenu m;
-        const int current = juce::roundToInt (dev.scale.get());
-        for (int i = 0; i < (int) StepsDevice::scales().size(); ++i)
-            m.addItem (i + 1, StepsDevice::scales()[(size_t) i].name, true, i == current);
-        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&scaleButton), [safe = juce::Component::SafePointer<StepsView> (this)] (int result)
-        {
-            if (safe != nullptr && result > 0)
-                set (safe->dev.scale.param(), (float) (result - 1));
-        });
-    }
-
-    void showLaneStepsMenu()
-    {
-        juce::PopupMenu m;
-        const int lane = grid.getLane();
-        const int current = juce::roundToInt (dev.laneSteps[(size_t) lane].get());
-        m.addItem (1, "Same as the Pattern", true, current == 0);
-        m.addSeparator();
-        for (int i = 1; i <= StepsDevice::numSteps; ++i)
-        {
-            if (i == 17) m.addColumnBreak();
-            m.addItem (i + 1, juce::String (i) + (i == 1 ? " step" : " steps"), true, current == i);
-        }
-        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&laneStepsButton), [safe = juce::Component::SafePointer<StepsView> (this), lane] (int result)
-        {
-            if (safe != nullptr && result > 0)
-                set (safe->dev.laneSteps[(size_t) lane].param(), (float) (result - 1));
-        });
-    }
-
-    void showToolsMenu()
-    {
-        juce::PopupMenu m;
-        const int lane = grid.getLane();
-        const auto name = StepsDevice::laneNames()[lane];
-        m.addItem (1, "Randomise " + name);
-        m.addItem (2, "Randomise Which Steps Play");
-        m.addSeparator();
-        m.addItem (3, "Shift Pattern Left");
-        m.addItem (4, "Shift Pattern Right");
-        m.addItem (5, "Double Pattern", dev.canDouble());
-        m.addSeparator();
-        m.addItem (6, "Reset " + name);
-        m.addItem (7, "Start Over");
-        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&toolsButton), [safe = juce::Component::SafePointer<StepsView> (this), lane] (int result)
-        {
-            if (safe == nullptr) return;
-            auto& d = safe->dev;
-            switch (result)
-            {
-                case 1: d.randomiseLane (lane); break;
-                case 2: d.randomiseSteps(); break;
-                case 3: d.shift (-1); break;
-                case 4: d.shift (1); break;
-                case 5: d.doubleLength(); break;
-                case 6: d.resetLane (lane); break;
-                case 7: d.loadDefaults(); break;
-                default: break;
-            }
-            safe->grid.repaint();
-        });
-    }
+    void showScaleMenu()        { StepsMenus::showScale (dev, scaleButton); }
+    void showLaneStepsMenu()    { StepsMenus::showLaneSteps (dev, grid.getLane(), laneStepsButton); }
+    void showToolsMenu()        { StepsMenus::showTools (dev, grid.getLane(), true, toolsButton); }
 
     void timerCallback() override
     {
@@ -1272,7 +1313,135 @@ private:
     }
 };
 
+//==============================================================================
+/** The sequencer in its own window: every lane at once, one under another, on one grid. */
+class StepsWindowView : public juce::Component, private juce::Timer
+{
+public:
+    StepsWindowView (StepsDevice& d)
+        : dev (d),
+          rateChoice (d.rateP.param(), MidiEffectDevice::rateNames(), Colours::solo),
+          directionChoice (d.direction.param(), StepsDevice::directionNames()),
+          length (d.length.param()), swing (d.swing.param()), gate (d.gate.param()), root (d.root.param()),
+          follow (d.follow.param(), "Follow Keys")
+    {
+        for (juce::Component* c : { (juce::Component*) &rateChoice, (juce::Component*) &directionChoice, (juce::Component*) &length,
+                                    (juce::Component*) &swing, (juce::Component*) &gate, (juce::Component*) &root, (juce::Component*) &follow,
+                                    (juce::Component*) &scaleButton, (juce::Component*) &patternButton })
+            addAndMakeVisible (c);
+
+        rateChoice.setTitle ("Rate");
+        directionChoice.setTitle ("Direction");
+        follow.setTitle ("Follow Keys");
+        scaleButton.setTooltip ("Keeps every pitch to the notes of a scale, counted from the Root");
+        patternButton.setTooltip ("Randomise which steps play, shift or double the pattern, or start over");
+        scaleButton.onClick = [this] { StepsMenus::showScale (dev, scaleButton); };
+        patternButton.onClick = [this] { StepsMenus::showTools (dev, -1, true, patternButton); };
+
+        for (int l = 0; l < StepsDevice::numLanes; ++l)
+        {
+            auto* row = rows.add (new Row (d));
+            row->grid.setLane (l);
+            row->grid.setShowsOnRow (l == 0);
+            row->grid.setLinedUpWithAllLanes (true);
+            row->grid.setTitle (StepsDevice::laneNames()[l]);
+            row->steps.setTitle (StepsDevice::laneNames()[l] + " steps");
+            row->steps.setTooltip ("How many steps this lane goes round in. Give it a different number from the pattern and the two drift apart, then meet again.");
+            row->steps.onClick = [this, l] { StepsMenus::showLaneSteps (dev, l, rows[l]->steps); };
+            row->tools.setTitle (StepsDevice::laneNames()[l] + " tools");
+            row->tools.setTooltip ("Randomise or reset this lane");
+            row->tools.onClick = [this, l] { StepsMenus::showTools (dev, l, false, rows[l]->tools); };
+            addAndMakeVisible (row->grid);
+            addAndMakeVisible (row->steps);
+            addAndMakeVisible (row->tools);
+        }
+
+        timerCallback();
+        startTimerHz (5);
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        for (int l = 0; l < rows.size(); ++l)
+        {
+            auto label = rows[l]->label;
+            g.setColour (StepGrid::laneColour (l));
+            g.fillRoundedRectangle (label.removeFromLeft (4).toFloat(), 2.0f);
+            g.setColour (Colours::text);
+            g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+            g.drawText (StepsDevice::laneNames()[l], label.withTrimmedLeft (8).removeFromTop (20), juce::Justification::centredLeft);
+        }
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds();
+
+        // Across the top: how it plays
+        auto top = r.removeFromTop (86);
+        auto choices = top.removeFromLeft (300);
+        rateChoice.setBounds (choices.removeFromTop (24));
+        choices.removeFromTop (6);
+        directionChoice.setBounds (choices.removeFromTop (24));
+        top.removeFromLeft (16);
+        for (auto* k : { &length, &root, &swing, &gate })
+            k->setBounds (top.removeFromLeft (76));
+        top.removeFromLeft (16);
+        auto buttons = top.removeFromLeft (190);
+        scaleButton.setBounds (buttons.removeFromTop (24));
+        buttons.removeFromTop (6);
+        follow.setBounds (buttons.removeFromTop (24).removeFromLeft (92));
+        patternButton.setBounds (follow.getBounds().translated (98, 0));
+        r.removeFromTop (8);
+
+        // The lanes: Pitch gets the most room
+        const int gap = 6;
+        const int shares = 3 + (rows.size() - 1);
+        const int unit = (r.getHeight() - 24 - gap * (rows.size() - 1)) / shares;
+
+        for (int l = 0; l < rows.size(); ++l)
+        {
+            auto area = r.removeFromTop (l == 0 ? unit * 3 + 24 : unit);
+            r.removeFromTop (gap);
+            auto label = area.removeFromLeft (124);
+            area.removeFromLeft (8);
+            rows[l]->grid.setBounds (area);
+
+            if (l == 0) label.removeFromTop (24);   // (level with the bars, under the on/off row)
+            rows[l]->label = label;
+            auto controls = label.withTrimmedLeft (8).withTrimmedTop (22).removeFromTop (20);
+            rows[l]->tools.setBounds (controls.removeFromRight (26));
+            controls.removeFromRight (4);
+            rows[l]->steps.setBounds (controls);
+        }
+    }
+
+private:
+    struct Row
+    {
+        Row (StepsDevice& d) : grid (d) {}
+        StepGrid grid;
+        juce::TextButton steps, tools { juce::String::fromUTF8 ("\xe2\x8b\xaf") };
+        juce::Rectangle<int> label;
+    };
+
+    StepsDevice& dev;
+    DeviceUI::Choice rateChoice, directionChoice;
+    DeviceUI::Knob length, swing, gate, root;
+    DeviceUI::Toggle follow;
+    juce::TextButton scaleButton, patternButton { "Pattern" };
+    juce::OwnedArray<Row> rows;
+
+    void timerCallback() override
+    {
+        scaleButton.setButtonText ("Scale: " + dev.scale.param().getCurrentValueAsString());
+        for (int l = 0; l < rows.size(); ++l)
+            rows[l]->steps.setButtonText (StepsMenus::laneStepsText (dev, l));
+    }
+};
+
 inline std::unique_ptr<juce::Component> ArpDevice::createDeviceView()      { return std::make_unique<ArpView> (*this); }
 inline std::unique_ptr<juce::Component> StepsDevice::createDeviceView()    { return std::make_unique<StepsView> (*this); }
+inline std::unique_ptr<juce::Component> StepsDevice::createWindowView()    { return std::make_unique<StepsWindowView> (*this); }
 
 } // namespace elsewhere

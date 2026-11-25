@@ -51,7 +51,8 @@ public:
     {
         auto shelfText = [] (float v) { return (v > 0.05f ? "+" : "") + juce::String (v, 1) + " dB"; };
 
-        time      = addParameter ("time", "Repeat Rate", 180.0f, skewed (40.0f, 600.0f, 200.0f), msText);
+        time      = addParameter ("time", "Repeat Rate", 180.0f, skewed (40.0f, 600.0f, 200.0f),
+                                  [] (float v) { return juce::String (juce::roundToInt (v)) + " ms"; });
         sync      = addParameter ("sync", "Sync", 0.0f, stepped (0, 5),
                                   [] (float v) { return syncNames()[juce::jlimit (0, 5, juce::roundToInt (v))]; });
         intensity = addParameter ("intensity", "Intensity", 40.0f, { 0.0f, 100.0f }, percentText);
@@ -76,6 +77,8 @@ public:
     juce::String getSelectableDescription() override   { return "Elsewhere Tape Echo"; }
     int getDeviceViewWidth() const override            { return 880; }
     std::unique_ptr<juce::Component> createDeviceView() override;
+    std::unique_ptr<juce::Component> createWindowView() override;
+    juce::Point<int> getWindowViewSize() const override    { return { 900, 500 }; }
 
     bool noTail() override                              { return false; }
     bool producesAudioWhenNoAudioInput() override       { return true; }
@@ -174,6 +177,11 @@ public:
 
         runAt (1.0 / (juce::jlimit (0.03, 1.0, time.get() * 0.001) * rate));
         upToSpeed = false;
+
+        for (auto& v : uiLevelAt) v = 0.0f;
+        for (auto& v : uiWeakAt) v = 0.0f;
+        pictureLevel = pictureWeak = 0.0f;
+        picturePiece = 0;
 
         rng.setSeed (0x7a9e5eed);   // (the same wear every time, so a mixdown can be repeated)
         bump.set (Biquad::Type::bell, 95.0, 0.9, 1.5, rate);
@@ -358,6 +366,18 @@ public:
             travel[(size_t) (count & mask)] = position;
             tape[(size_t) (count & mask)] = rec;
 
+            // For the picture: how loud each short length of tape is, and how weak
+            pictureLevel = juce::jmax (pictureLevel, std::abs (rec));
+            pictureWeak = juce::jmax (pictureWeak, weak);
+
+            if (const auto piece = (juce::int64) std::floor (position * piecesPerGap); piece != picturePiece)
+            {
+                picturePiece = piece;
+                uiLevelAt[(size_t) (piece & (pictureSize - 1))] = pictureLevel;
+                uiWeakAt[(size_t) (piece & (pictureSize - 1))] = pictureWeak;
+                pictureLevel = pictureWeak = 0.0f;
+            }
+
             // Playback: each head hears the piece of tape that is passing it now
             float wetL = 0.0f, wetR = 0.0f, sum = 0.0f, active = 0.0f;
 
@@ -420,6 +440,11 @@ public:
     double getTapePosition() const          { return uiTape.load(); }
     float getHeadLevel (int h) const        { return uiHeadLevel[(size_t) h].load(); }
     float getWeakPatch() const              { return uiWeak.load(); }
+
+    /** How loud the recording is at a place on the tape (in head gaps, as getTapePosition), and
+        how weak the tape was there. Only the last few gaps are remembered. */
+    float getLevelOnTape (double place) const   { return uiLevelAt[(size_t) ((juce::int64) std::floor (place * piecesPerGap) & (pictureSize - 1))].load(); }
+    float getWeakOnTape (double place) const    { return uiWeakAt[(size_t) ((juce::int64) std::floor (place * piecesPerGap) & (pictureSize - 1))].load(); }
 
     /** The time the tape takes from the record head to Head 1, at the speed it is going now. */
     float getGapSeconds() const             { return uiGap.load(); }
@@ -493,6 +518,11 @@ private:
     std::array<std::atomic<float>, numHeads> uiHeadLevel {};
     std::atomic<float> uiWeak { 0.0f }, uiGap { 0.18f };
 
+    static constexpr int piecesPerGap = 48, pictureSize = 256;      // a little over five gaps of tape
+    std::array<std::atomic<float>, pictureSize> uiLevelAt {}, uiWeakAt {};
+    float pictureLevel = 0.0f, pictureWeak = 0.0f;
+    juce::int64 picturePiece = 0;
+
     /** The chance events of an old machine. `dt` is the time since the last call, in seconds. */
     void everySoOften (float wearAmt, float dt)
     {
@@ -559,7 +589,12 @@ private:
 };
 
 //==============================================================================
-/** The machine: the tape loop going round, the heads lighting as they play. */
+/** The machine, drawn as a line: the tape runs past the record head and the three playback
+    heads along the bottom, then lies in loose folds in the bin above until it comes round again.
+
+    The picture is what is happening: the sound just recorded rides along the tape from the
+    record head to each playback head in turn, thinning where the tape is weak; the folds drift
+    with Wow, shiver with Flutter and hang unevenly with Wear; and the tape moves at its speed. */
 class EchoScreen : public juce::Component, private juce::Timer
 {
 public:
@@ -571,44 +606,177 @@ public:
         g.setColour (Colours::display);
         g.fillRoundedRectangle (r, 4.0f);
 
-        // The loop: along the heads at the bottom, round and back over the top
-        auto loop = r.reduced (16.0f, 20.0f).withTrimmedTop (4.0f);
-        juce::Path path;
-        path.addRoundedRectangle (loop, loop.getHeight() * 0.5f);
-        const float weak = dev.getWeakPatch();
-        const auto tapeColour = Colours::clips[6].interpolatedWith (Colours::textDim, 0.3f);
-        g.setColour (tapeColour.withAlpha (0.55f));
-        g.strokePath (path, juce::PathStrokeType (5.0f));
+        const float left = r.getX() + 18.0f, right = r.getRight() - 18.0f;
+        const float runY = r.getBottom() - 30.0f;                    // the run past the heads
+        const float binTop = r.getY() + 28.0f, binBottom = runY - 20.0f, binH = juce::jmax (10.0f, binBottom - binTop);
+        const float gap = (right - left) * 0.21f;
+        const float recX = right - gap * 0.55f;
 
-        // Marks on the tape, so you can see it move (and waver)
-        const float length = path.getLength();
         const double pos = dev.getTapePosition();
-        const float gap = loop.getWidth() * 0.19f;
-        const int marks = juce::jmax (8, (int) (length / (gap * 0.5f)));
-        const float phase = (float) (pos * 2.0 - std::floor (pos * 2.0));
-        g.setColour (Colours::display.withAlpha (0.8f));
-        for (int i = 0; i < marks; ++i)
+        const float now = (float) std::fmod (juce::Time::getMillisecondCounterHiRes() * 0.001, 3600.0);
+        const float wowAmt = dev.wow.get() / 100.0f, flutterAmt = dev.flutter.get() / 100.0f, wearAmt = dev.wear.get() / 100.0f;
+        const float driveAmt = dev.drive.get() / 100.0f, echoAmt = dev.echo.get() / 100.0f;
+        const auto tapeColour = Colours::clips[6].interpolatedWith (Colours::textDim, 0.3f);
+
+        // The folds: up from the heads on the left, back and forth across the bin, down to
+        // the record head on the right
+        auto chance = [] (int i, int salt)
         {
-            auto p = path.getPointAlongPath (length * ((float) i + phase) / (float) marks);
-            g.fillEllipse (p.x - 1.0f, p.y - 1.0f, 2.0f, 2.0f);
+            auto x = (juce::uint32) (i * 7919 + salt * 104729 + 12345);
+            x ^= x >> 13; x *= 0x5bd1e995u; x ^= x >> 15;
+            return (float) (x & 0xffff) / 65535.0f;
+        };
+
+        const int folds = juce::jmax (4, (int) ((right - left) / 30.0f)) | 1;   // (odd, so it ends at the top)
+        std::vector<juce::Point<float>> pts;
+        pts.push_back ({ left, runY });
+        pts.push_back ({ left, binBottom });
+
+        for (int i = 0; i < folds; ++i)
+        {
+            const bool top = (i % 2) == 0;
+            const float lean = (chance (i, 3) - 0.5f) * 14.0f;
+            float reach = binH * (0.18f + 0.32f * chance (i, 1)) * (1.0f + wearAmt * (chance (i, 2) - 0.5f) * 1.2f);
+
+            // The folds move as the tape speed does: a slow heave with the Wow (at the wow's own
+            // pace), a quick shiver with the Flutter. With both at nothing the tape hangs still.
+            reach += std::sin (now * 3.46f * (0.85f + 0.3f * chance (i, 4)) + (float) i * 1.7f) * binH * (0.015f + 0.24f * wowAmt);
+            const float shiver = std::sin (now * 52.0f * (0.9f + 0.2f * chance (i, 5)) + (float) i * 2.3f) * 3.5f * flutterAmt;
+            const float x = left + (right - left) * ((float) i + 1.0f) / ((float) folds + 1.0f) + lean
+                            + std::sin (now * 2.1f + (float) i * 0.9f) * 10.0f * wowAmt;
+            pts.push_back ({ x + shiver, top ? binTop + juce::jmax (0.0f, binH * 0.5f - reach) : binBottom - juce::jmax (0.0f, binH * 0.5f - reach) });
         }
 
-        // Heads along the bottom run: record, then the three that play
-        const float y = loop.getBottom();
-        const float x0 = loop.getCentreX() + gap * 1.5f;
+        pts.push_back ({ right, binBottom });
+        pts.push_back ({ right, runY });
+
+        juce::Path tape;
+        tape.startNewSubPath (pts.front());
+        for (size_t i = 1; i + 1 < pts.size(); ++i)
+            tape.quadraticTo (pts[i], (pts[i] + pts[i + 1]) * 0.5f);
+        tape.lineTo (pts.back());
+        tape.lineTo (pts.front());      // the run past the heads
+        tape.closeSubPath();
+
+        // The tape itself, drawn a short length at a time so each length can be the piece of
+        // tape that is really there: worn tape is creased and patchy, and the creases and
+        // patches travel round with it
+        const float length = tape.getLength();
+        const float piecePx = 5.0f;
+        const double pxPerGap = (double) gap;
+        const int pieces = juce::jmax (8, (int) (length / piecePx));
+        juce::Point<float> last;
+
+        for (int i = 0; i <= pieces; ++i)
+        {
+            const float along = length * (float) i / (float) pieces;
+            auto p = tape.getPointAlongPath (along);
+
+            // Which piece of tape this is (the tape moves against the way the path was drawn)
+            const auto which = (int) std::floor (((double) along / pxPerGap + pos) * 5.0);
+            const float crease = (chance (which, 11) - 0.5f) * 5.0f * wearAmt * wearAmt;
+            const bool onRun = p.y > runY - 1.0f;
+            if (! onRun)
+                p.y += crease;
+
+            if (i > 0)
+            {
+                const bool thin = chance (which, 12) < wearAmt * 0.2f;
+                g.setColour (tapeColour.withAlpha (thin ? 0.22f : 0.65f));
+                g.drawLine ({ last, p }, thin ? 1.4f : 2.5f);
+            }
+
+            last = p;
+        }
+
+        // Marks on the tape, so you can see how fast it is going
+        const int marks = juce::jmax (8, (int) (length / (gap * 0.5f)));
+        const float phase = (float) (pos * 2.0 - std::floor (pos * 2.0));
+        g.setColour (Colours::display.withAlpha (0.9f));
+        for (int i = 0; i < marks; ++i)
+        {
+            auto p = tape.getPointAlongPath (length * (1.0f - ((float) i + phase) / (float) marks));
+            g.fillEllipse (p.x - 1.3f, p.y - 1.3f, 2.6f, 2.6f);
+        }
+
+        // Hiss: specks along the run past the heads
+        if (const float hiss = dev.noise.get() / 100.0f; hiss > 0.0f)
+        {
+            g.setColour (Colours::text.withAlpha (0.25f + 0.35f * hiss));
+            for (int i = 0; i < (int) (hiss * 70.0f); ++i)
+                g.fillRect (left + specks.nextFloat() * (right - left), runY + (specks.nextFloat() - 0.5f) * (6.0f + 14.0f * hiss), 1.0f, 1.0f);
+        }
+
+        // What is on the tape, from the record head on past each playback head
+        const float tall = juce::jmin (16.0f, (r.getBottom() - runY) - 14.0f + 8.0f);
+        for (float x = recX; x > left + 2.0f; x -= 2.0f)
+        {
+            const double back = (double) ((recX - x) / gap);     // how many gaps this bit of tape has travelled
+            const float level = juce::jlimit (0.0f, 1.0f, dev.getLevelOnTape (pos - back) * 1.6f);
+            if (level < 0.01f) continue;
+            const float half = 1.0f + level * tall;
+            const float fade = back > 3.0 ? juce::jmax (0.0f, 1.0f - (float) (back - 3.0) * 2.5f) : 1.0f;
+            // (driven hard, the recording runs hot)
+            g.setColour (Colours::accent.interpolatedWith (Colours::meterRed, juce::jlimit (0.0f, 1.0f, driveAmt * (0.3f + level)))
+                                        .withAlpha ((0.35f + 0.6f * level) * fade * (1.0f - 0.7f * dev.getWeakOnTape (pos - back))));
+            g.fillRect (x - 0.6f, runY - half, 1.2f, half * 2.0f);
+        }
+
+        // Intensity: what each head plays going back to the record head
+        const float intensityAmt = dev.intensity.get() / 100.0f;
+
+        for (int h = 0; h < EchoDevice::numHeads; ++h)
+        {
+            if (dev.heads[(size_t) h].get() < 0.5f || intensityAmt < 0.01f)
+                continue;
+
+            const float from = recX - gap * (float) (h + 1);
+            const float level = juce::jlimit (0.0f, 1.0f, dev.getHeadLevel (h) * 3.0f);
+            juce::Path back;
+            back.startNewSubPath (from, runY - 9.0f);
+            back.quadraticTo ((from + recX) * 0.5f, runY - 16.0f - 7.0f * (float) (h + 1), recX - 2.0f, runY - 9.0f);
+            g.setColour (Colours::accent.withAlpha (intensityAmt * (0.18f + 0.8f * level)));
+            g.strokePath (back, juce::PathStrokeType (1.0f + 2.0f * intensityAmt));
+        }
+
+        if (intensityAmt >= 0.01f)
+        {
+            juce::Path arrow;
+            arrow.addTriangle (recX - 2.0f, runY - 6.0f, recX - 8.0f, runY - 12.0f, recX + 1.0f, runY - 13.0f);
+            g.setColour (Colours::accent.withAlpha (0.25f + 0.6f * intensityAmt));
+            g.fillPath (arrow);
+        }
+
+        // The heads: record, then the three that play
         static const char* names[] = { "REC", "1", "2", "3" };
         juce::StringArray times;
 
         for (int i = 0; i < 4; ++i)
         {
-            auto box = juce::Rectangle<float> (14.0f, 14.0f).withCentre ({ x0 - gap * (float) i, y });
+            auto box = juce::Rectangle<float> (12.0f, 12.0f).withCentre ({ recX - gap * (float) i, runY });
             const bool on = i == 0 || dev.heads[(size_t) (i - 1)].get() > 0.5f;
-            const float level = i == 0 ? 0.0f : juce::jlimit (0.0f, 1.0f, dev.getHeadLevel (i - 1) * 3.0f);
+            // A playing head glows with what it plays, as loud as Echo lets it be heard
+            const float level = i == 0 ? 0.0f : juce::jlimit (0.0f, 1.0f, dev.getHeadLevel (i - 1) * 3.0f) * echoAmt;
             auto colour = i == 0 ? Colours::meterRed : Colours::accent;
             g.setColour (Colours::display);
-            g.fillRoundedRectangle (box.expanded (2.0f), 3.0f);
-            g.setColour (on ? colour.withAlpha (i == 0 ? 0.9f - 0.6f * weak : 0.35f + 0.65f * level) : Colours::panelLight);
-            g.fillRoundedRectangle (box, 2.0f);
+            g.fillRoundedRectangle (box.expanded (1.5f), 3.0f);
+
+            if (on)
+            {
+                if (level > 0.02f)
+                {
+                    g.setColour (colour.withAlpha (0.25f * level));
+                    g.fillEllipse (box.expanded (3.0f + 7.0f * level));
+                }
+                g.setColour (colour.withAlpha (i == 0 ? 0.9f - 0.6f * dev.getWeakPatch() : 0.55f + 0.45f * level));
+                g.fillRoundedRectangle (box, 2.0f);
+            }
+            else
+            {
+                // (a head that is off is only an outline)
+                g.setColour (Colours::textDim.withAlpha (0.6f));
+                g.drawRoundedRectangle (box.reduced (0.5f), 2.0f, 1.0f);
+            }
             g.setColour (Colours::textDim);
             g.setFont (juce::FontOptions (9.0f, juce::Font::bold));
             g.drawText (names[i], box.translated (0.0f, 15.0f).expanded (8.0f, 0.0f), juce::Justification::centred);
@@ -619,21 +787,23 @@ public:
 
         // When the echoes come, for the heads that are on
         g.setColour (Colours::text);
-        g.setFont (juce::FontOptions (15.0f, juce::Font::bold));
+        g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
         g.drawText (times.isEmpty() ? juce::String ("No heads on") : times.joinIntoString (juce::String::fromUTF8 (" \xc2\xb7 ")) + " ms",
-                    loop.toNearestInt().reduced (10, 0), juce::Justification::centred);
+                    getLocalBounds().reduced (10, 6).removeFromTop (16), juce::Justification::centredLeft);
     }
 
 private:
     EchoDevice& dev;
+    juce::Random specks;
     void timerCallback() override   { repaint(); }
 };
 
 class EchoView : public juce::Component, private juce::Timer
 {
 public:
-    EchoView (EchoDevice& d)
-        : dev (d), screen (d),
+    /** `inWindow`: the roomier layout for the device's own window. */
+    EchoView (EchoDevice& d, bool inWindow = false)
+        : dev (d), window (inWindow), screen (d),
           head1 (d.heads[0].param(), "Head 1"), head2 (d.heads[1].param(), "Head 2"), head3 (d.heads[2].param(), "Head 3"),
           syncChoice (d.sync.param(), EchoDevice::syncNames(), Colours::solo),
           dryToggle (d.dry.param(), "Dry"),
@@ -658,8 +828,22 @@ public:
         startTimerHz (5);
     }
 
+    void paint (juce::Graphics& g) override
+    {
+        if (! window) return;
+        DeviceUI::paintSection (g, echoArea, "Echo");
+        DeviceUI::paintSection (g, toneArea, "Tone");
+        DeviceUI::paintSection (g, tapeArea, "Tape");
+    }
+
     void resized() override
     {
+        if (window)
+        {
+            layoutWindow();
+            return;
+        }
+
         auto r = getLocalBounds();
         screen.setBounds (r.removeFromLeft (230));
         r.removeFromLeft (10);
@@ -680,6 +864,8 @@ public:
 
 private:
     EchoDevice& dev;
+    const bool window;
+    juce::Rectangle<int> echoArea, toneArea, tapeArea;
     EchoScreen screen;
     DeviceUI::Toggle head1, head2, head3;
     DeviceUI::Choice syncChoice;
@@ -695,6 +881,54 @@ private:
         const int w = r.getWidth() / 6;
         for (auto* k : knobs)
             k->setBounds (r.removeFromLeft (w));
+    }
+
+    /** The machine across the top, its controls in three groups underneath. */
+    void layoutWindow()
+    {
+        auto r = getLocalBounds();
+        auto top = r.removeFromTop (24);
+        patchButton.setBounds (top.removeFromRight (180));
+        r.removeFromTop (6);
+        screen.setBounds (r.removeFromTop (juce::jmax (150, r.getHeight() * 2 / 5)));
+        r.removeFromTop (8);
+
+        echoArea = r.removeFromLeft (r.getWidth() * 2 / 5);
+        r.removeFromLeft (8);
+        toneArea = r.removeFromLeft (r.getWidth() * 2 / 5);
+        r.removeFromLeft (8);
+        tapeArea = r;
+
+        auto across = [] (juce::Rectangle<int> area, std::vector<DeviceUI::Knob*> knobs, int perRow)
+        {
+            const int w = area.getWidth() / perRow, h = juce::jmin (96, area.getHeight());
+            area = area.withSizeKeepingCentre (area.getWidth(), h);
+            for (auto* k : knobs)
+                k->setBounds (area.removeFromLeft (w));
+        };
+
+        {
+            auto c = echoArea.reduced (8).withTrimmedTop (14);
+            auto row = c.removeFromTop (24);
+            const int w = (row.getWidth() - 8) / 4;
+            head1.setBounds (row.removeFromLeft (w)); row.removeFromLeft (2);
+            head2.setBounds (row.removeFromLeft (w)); row.removeFromLeft (2);
+            head3.setBounds (row.removeFromLeft (w)); row.removeFromLeft (4);
+            dryToggle.setBounds (row);
+            c.removeFromTop (6);
+            syncChoice.setBounds (c.removeFromTop (24));
+            c.removeFromTop (6);
+            across (c, { &time, &intensity, &echo }, 3);
+        }
+
+        across (toneArea.reduced (8).withTrimmedTop (14), { &drive, &bass, &treble }, 3);
+
+        {
+            auto c = tapeArea.reduced (8).withTrimmedTop (14);
+            auto upper = c.removeFromTop (c.getHeight() / 2);
+            across (upper, { &wow, &flutter, &wear }, 3);
+            across (c, { &noise, &spread }, 3);
+        }
     }
 
     void showPatchMenu()
@@ -713,5 +947,6 @@ private:
 };
 
 inline std::unique_ptr<juce::Component> EchoDevice::createDeviceView()     { return std::make_unique<EchoView> (*this); }
+inline std::unique_ptr<juce::Component> EchoDevice::createWindowView()     { return std::make_unique<EchoView> (*this, true); }
 
 } // namespace elsewhere

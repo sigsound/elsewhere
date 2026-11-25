@@ -204,6 +204,29 @@ namespace
             png.writeImageToStream (img, *out);
     }
 
+    /** A picture of a device's own window panel, at the size it opens at. */
+    void snapshotWindow (ElsewhereDevice& d, const juce::File& f)
+    {
+        auto view = d.createWindowView();
+        if (view == nullptr) return;
+        juce::Component holder;
+        holder.setSize (d.getWindowViewSize().x + 16, d.getWindowViewSize().y + 16);
+        holder.addAndMakeVisible (*view);
+        view->setBounds (holder.getLocalBounds().reduced (8));
+
+        juce::Image img (juce::Image::ARGB, holder.getWidth(), holder.getHeight(), true);
+        {
+            juce::Graphics g (img);
+            g.fillAll (Colours::panel);
+            holder.paintEntireComponent (g, true);
+        }
+
+        f.deleteFile();
+        juce::PNGImageFormat png;
+        if (auto out = f.createOutputStream())
+            png.writeImageToStream (img, *out);
+    }
+
     std::vector<te::Plugin::Ptr> keepAlive;   // released before the test edit goes away
 
     template <typename T>
@@ -2674,6 +2697,7 @@ int run (te::Engine& engine, const juce::File& outDir)
         setParam (seq.length, 24.0f);
         for (int l = 0; l < StepsDevice::numLanes; ++l) seq.randomiseLane (l);
         snapshot (seq, outDir.getChildFile ("steps-32.png"));
+        snapshotWindow (seq, outDir.getChildFile ("steps-window.png"));
     }
 
     //==============================================================================
@@ -2934,7 +2958,19 @@ int run (te::Engine& engine, const juce::File& outDir)
         }
 
         ec.loadPatch (2);
+        ec.initialise ({ te::TimePosition(), sr, block });
+        {
+            // (some notes on the tape, so the picture has something to show)
+            auto notes = sine (330.0, 0.6f, 0.75);
+            for (int i = 0; i < notes.getNumSamples(); ++i)
+                notes.applyGain (i, 1, 0.5f + 0.5f * (float) std::sin (i / sr * 40.0) > 0.7f ? 1.0f : 0.05f);
+            process (ec, notes);
+        }
         snapshot (ec, outDir.getChildFile ("echo.png"));
+        snapshotWindow (ec, outDir.getChildFile ("echo-window.png"));
+        for (auto p : { ec.wow, ec.flutter, ec.wear, ec.noise, ec.drive, ec.intensity }) setParam (p, 90.0f);
+        setParam (ec.heads[1], 0.0f);
+        snapshotWindow (ec, outDir.getChildFile ("echo-window-worn.png"));
     }
 
     //==============================================================================
