@@ -79,6 +79,7 @@ public:
         }
 
         out.clear();
+        rendering = fc.isRendering;
 
         // Starting/stopping the transport, or an all-notes-off: silence what we're playing
         const bool transportChanged = fc.isPlaying != wasPlaying;
@@ -179,6 +180,7 @@ protected:
 
     double rate = 44100.0;
     double freeBeat = 0.0;
+    bool rendering = false;     // this block is part of a mixdown
     std::atomic<int> currentStep { -1 };
 
     struct Sounding { int note, channel; double samplesLeft; };
@@ -412,64 +414,306 @@ protected:
 
 //==============================================================================
 /**
-    Elsewhere Steps: a 16-step note sequencer.
+    Elsewhere Steps: a note sequencer of up to 32 steps.
 
-    Each step has on/off, a pitch (semitones from the root) and a velocity. It plays
-    with the transport, or (Follow Keys) only while you hold a key, transposed to it.
+    Each step is on or off, and has a value in each lane:
+
+      - Pitch (semitones from the root, kept to the Scale) and Velocity
+      - Length: how long the note lasts, as a share of the Gate. Past 100 % it runs into the
+        next step, which a synth with glide plays as a slide
+      - Chance: how likely the step is to play
+      - Repeat: plays the note several times within the step
+      - Nudge: moves the step earlier or later
+      - Every: plays only on some trips round the pattern (the 1st of 2, the 3rd of 4 ...)
+
+    A lane can have its own number of steps, so (say) five pitches go round under a pattern of
+    sixteen and the two only line up again after eighty. The pattern can run forwards, backwards,
+    back and forth, or in a random order.
+
+    It plays with the transport, or (Follow Keys) only while you hold a key, transposed to it.
+
+    Which step plays when is worked out from where the song is, not counted, so a pattern sounds
+    the same from wherever you start. Chance and Random are rolled per step and per time through,
+    and repeat exactly on a mixdown.
 */
 class StepsDevice : public MidiEffectDevice
 {
 public:
     static constexpr const char* xmlTypeName = "elsewhereSteps";
-    static constexpr int numSteps = 16;
+    static constexpr int numSteps = 32;
 
-    struct Step { Param on, pitch, velocity; };
+    enum Lane { pitchLane, velocityLane, lengthLane, chanceLane, repeatLane, nudgeLane, everyLane, numLanes };
+    static juce::StringArray laneNames()        { return { "Pitch", "Velocity", "Length", "Chance", "Repeat", "Nudge", "Every" }; }
+
+    enum Direction { forward, backward, bounce, randomOrder, numDirections };
+    static juce::StringArray directionNames()   { return { "Forward", "Back", "Bounce", "Random" }; }
+
+    /** Scales, as the semitones above the root that belong to them. */
+    struct Scale { const char* name; std::vector<int> notes; };
+
+    static const std::vector<Scale>& scales()
+    {
+        static const std::vector<Scale> all = {
+            { "Any Note",         { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 } },
+            { "Major",            { 0, 2, 4, 5, 7, 9, 11 } },
+            { "Minor",            { 0, 2, 3, 5, 7, 8, 10 } },
+            { "Dorian",           { 0, 2, 3, 5, 7, 9, 10 } },
+            { "Phrygian",         { 0, 1, 3, 5, 7, 8, 10 } },
+            { "Lydian",           { 0, 2, 4, 6, 7, 9, 11 } },
+            { "Mixolydian",       { 0, 2, 4, 5, 7, 9, 10 } },
+            { "Harmonic Minor",   { 0, 2, 3, 5, 7, 8, 11 } },
+            { "Major Pentatonic", { 0, 2, 4, 7, 9 } },
+            { "Minor Pentatonic", { 0, 3, 5, 7, 10 } },
+            { "Blues",            { 0, 3, 5, 6, 7, 10 } },
+            { "Whole Tone",       { 0, 2, 4, 6, 8, 10 } },
+        };
+        return all;
+    }
+
+    /** Moves a pitch (semitones from the root) down to the nearest note of a scale. */
+    static int snapToScale (int semitones, int scaleIndex)
+    {
+        const auto& notes = scales()[(size_t) juce::jlimit (0, (int) scales().size() - 1, scaleIndex)].notes;
+        const int octave = (int) std::floor (semitones / 12.0), within = semitones - octave * 12;
+        int best = 0;
+        for (int n : notes)
+            if (n <= within)
+                best = n;
+        return octave * 12 + best;
+    }
+
+    static juce::StringArray everyNames()
+    {
+        return { "Always", "1st of 2", "2nd of 2", "1st of 3", "2nd of 3", "3rd of 3", "1st of 4", "2nd of 4", "3rd of 4", "4th of 4" };
+    }
+
+    /** Whether an Every setting lets a step play on this trip round the pattern (counted from 0). */
+    static bool everyAllows (int setting, long long trip)
+    {
+        if (setting <= 0) return true;
+        const int of = setting <= 2 ? 2 : setting <= 5 ? 3 : 4;
+        const int which = setting - (of == 2 ? 1 : of == 3 ? 3 : 6);
+        return trip % of == which;
+    }
+
+    struct Step
+    {
+        Param on, pitch, velocity, length, chance, repeat, nudge, every;
+
+        Param& lane (int l)
+        {
+            switch (l)
+            {
+                case velocityLane:  return velocity;
+                case lengthLane:    return length;
+                case chanceLane:    return chance;
+                case repeatLane:    return repeat;
+                case nudgeLane:     return nudge;
+                case everyLane:     return every;
+                default:            return pitch;
+            }
+        }
+    };
 
     StepsDevice (te::PluginCreationInfo info) : MidiEffectDevice (info)
     {
+        auto signedText = [] (float v) { auto s = juce::roundToInt (v); return (s > 0 ? "+" : "") + juce::String (s); };
+        auto wholeText = [] (float v) { return juce::String (juce::roundToInt (v)); };
+
         rateP  = addParameter ("rate", "Rate", 3.0f, stepped (0, 5), [] (float v) { return rateNames()[juce::jlimit (0, 5, juce::roundToInt (v))]; });
-        length = addParameter ("length", "Length", 16.0f, stepped (1, numSteps), [] (float v) { return juce::String (juce::roundToInt (v)) + " steps"; });
+        length = addParameter ("length", "Steps", 16.0f, stepped (1, numSteps), wholeText);
         swing  = addParameter ("swing", "Swing", 0.0f, { 0.0f, 75.0f }, percentText);
         gate   = addParameter ("gate", "Gate", 50.0f, { 5.0f, 200.0f }, percentText);
         root   = addParameter ("root", "Root", 48.0f, stepped (24, 96), [] (float v) { return juce::MidiMessage::getMidiNoteName (juce::roundToInt (v), true, true, 3); });
         follow = addParameter ("follow", "Follow Keys", 0.0f, stepped (0, 1), onOffText);
+        direction = addParameter ("direction", "Direction", (float) forward, stepped (0, numDirections - 1),
+                                  [] (float v) { return directionNames()[juce::jlimit (0, numDirections - 1, juce::roundToInt (v))]; });
+        scale  = addParameter ("scale", "Scale", 0.0f, stepped (0, (float) scales().size() - 1.0f),
+                               [] (float v) { return juce::String (scales()[(size_t) juce::jlimit (0, (int) scales().size() - 1, juce::roundToInt (v))].name); });
 
         // A simple starting pattern: root on the beats, a fifth and an octave in between
-        static const int defaultOn[numSteps]    = { 1,0,1,0, 1,0,1,1, 1,0,1,0, 1,0,1,1 };
-        static const int defaultPitch[numSteps] = { 0,0,7,0, 12,0,7,10, 0,0,7,0, 12,0,15,12 };
+        static const int defaultOn[16]    = { 1,0,1,0, 1,0,1,1, 1,0,1,0, 1,0,1,1 };
+        static const int defaultPitch[16] = { 0,0,7,0, 12,0,7,10, 0,0,7,0, 12,0,15,12 };
 
         for (int i = 0; i < numSteps; ++i)
         {
             auto id = "s" + juce::String (i + 1);
             auto nm = "Step " + juce::String (i + 1) + " ";
-            steps[(size_t) i].on       = addParameter (id + "on", nm + "On", (float) defaultOn[i], stepped (0, 1), onOffText);
-            steps[(size_t) i].pitch    = addParameter (id + "pitch", nm + "Pitch", (float) defaultPitch[i], stepped (-24, 24),
-                                                       [] (float v) { auto s = juce::roundToInt (v); return (s > 0 ? "+" : "") + juce::String (s); });
-            steps[(size_t) i].velocity = addParameter (id + "vel", nm + "Velocity", i % 4 == 0 ? 110.0f : 85.0f, stepped (1, 127),
-                                                       [] (float v) { return juce::String (juce::roundToInt (v)); });
+            auto& s = steps[(size_t) i];
+            s.on       = addParameter (id + "on", nm + "On", i < 16 ? (float) defaultOn[i] : 0.0f, stepped (0, 1), onOffText);
+            s.pitch    = addParameter (id + "pitch", nm + "Pitch", i < 16 ? (float) defaultPitch[i] : 0.0f, stepped (-24, 24), signedText);
+            s.velocity = addParameter (id + "vel", nm + "Velocity", i % 4 == 0 ? 110.0f : 85.0f, stepped (1, 127), wholeText);
+            s.length   = addParameter (id + "len", nm + "Length", 100.0f, skewed (10.0f, 400.0f, 100.0f), percentText);
+            s.chance   = addParameter (id + "chance", nm + "Chance", 100.0f, stepped (0, 100), percentText);
+            s.repeat   = addParameter (id + "rep", nm + "Repeat", 1.0f, stepped (1, 8), [] (float v) { return juce::String (juce::roundToInt (v)) + "x"; });
+            s.nudge    = addParameter (id + "nudge", nm + "Nudge", 0.0f, stepped (-50, 50), [signedText] (float v) { return signedText (v) + " %"; });
+            s.every    = addParameter (id + "every", nm + "Every", 0.0f, stepped (0, 9), [] (float v) { return everyNames()[juce::jlimit (0, 9, juce::roundToInt (v))]; });
         }
+
+        static const char* laneIds[numLanes] = { "pitchsteps", "velsteps", "lensteps", "chancesteps", "repsteps", "nudgesteps", "everysteps" };
+        for (int l = 0; l < numLanes; ++l)
+            laneSteps[(size_t) l] = addParameter (laneIds[l], laneNames()[l] + " Steps", 0.0f, stepped (0, numSteps),
+                                                  [] (float v) { return v < 0.5f ? juce::String ("Pattern") : juce::String (juce::roundToInt (v)); });
     }
 
     juce::String getName() const override              { return "Elsewhere Steps"; }
     juce::String getPluginType() override              { return xmlTypeName; }
     juce::String getSelectableDescription() override   { return "Elsewhere Steps"; }
-    int getDeviceViewWidth() const override            { return 830; }
+    int getDeviceViewWidth() const override            { return 940; }
     std::unique_ptr<juce::Component> createDeviceView() override;
 
+    void initialise (const te::PluginInitialisationInfo& info) override
+    {
+        turn = 0;   // (so a mixdown rolls the same dice every time)
+        MidiEffectDevice::initialise (info);
+    }
+
+    //==============================================================================
+    int patternSteps() const        { return juce::jlimit (1, numSteps, juce::roundToInt (length.get())); }
+
+    /** How many steps a lane goes round in: its own count, or the pattern's. */
+    int stepsInLane (int lane) const
+    {
+        const int own = juce::roundToInt (laneSteps[(size_t) lane].get());
+        return own > 0 ? juce::jmin (own, numSteps) : patternSteps();
+    }
+
+    /** Which step is under the playhead at step count `k`, for the on/off row (lane -1) or a lane. */
+    int indexFor (int lane, long long k) const
+    {
+        const int len = lane < 0 ? patternSteps() : stepsInLane (lane);
+        const auto count = (long long) len;
+
+        switch ((Direction) juce::jlimit (0, numDirections - 1, juce::roundToInt (direction.get())))
+        {
+            case backward:      return (int) (count - 1 - k % count);
+            case bounce:
+            {
+                if (len < 2) return 0;
+                const auto there = k % (2 * count - 2);
+                return (int) (there < count ? there : 2 * count - 2 - there);
+            }
+            case randomOrder:   return (int) (roll (k, 0x51ed) % (juce::uint32) len);
+            case forward: case numDirections: break;
+        }
+        return (int) (k % count);
+    }
+
+    /** The step count the pattern is at (for the playheads), -1 when idle. */
+    long long getCurrentCount() const       { return currentCount.load(); }
+
+    //==============================================================================
+    // Things to do to a pattern (from the Tools menu)
+    void randomiseLane (int lane)
+    {
+        juce::Random r;
+        edit.getUndoManager().beginNewTransaction ("Randomise " + laneNames()[lane]);
+
+        for (int i = 0; i < stepsInLane (lane); ++i)
+        {
+            float v = 0.0f;
+            switch (lane)
+            {
+                case pitchLane:     v = (float) snapToScale (r.nextInt ({ -12, 16 }), juce::roundToInt (scale.get())); break;
+                case velocityLane:  v = (float) r.nextInt ({ 45, 128 }); break;
+                case lengthLane:    { static const float l[] = { 50, 100, 100, 100, 150, 200 }; v = l[r.nextInt (6)]; break; }
+                case chanceLane:    v = r.nextFloat() < 0.5f ? 100.0f : (float) r.nextInt ({ 30, 100 }); break;
+                case repeatLane:    v = r.nextFloat() < 0.75f ? 1.0f : (float) r.nextInt ({ 2, 5 }); break;
+                case nudgeLane:     v = (float) r.nextInt ({ -15, 16 }); break;
+                case everyLane:     v = r.nextFloat() < 0.7f ? 0.0f : (float) r.nextInt ({ 1, 10 }); break;
+                default: break;
+            }
+            steps[(size_t) i].lane (lane).param().setParameter (v, juce::sendNotification);
+        }
+    }
+
+    void randomiseSteps()
+    {
+        juce::Random r;
+        edit.getUndoManager().beginNewTransaction ("Randomise Steps");
+        for (int i = 0; i < patternSteps(); ++i)
+            steps[(size_t) i].on.param().setParameter (i == 0 || r.nextFloat() < 0.55f ? 1.0f : 0.0f, juce::sendNotification);
+    }
+
+    void resetLane (int lane)
+    {
+        edit.getUndoManager().beginNewTransaction ("Reset " + laneNames()[lane]);
+        for (auto& s : steps)
+        {
+            auto& p = s.lane (lane).param();
+            p.setParameter (p.getDefaultValue().value_or (p.getCurrentBaseValue()), juce::sendNotification);
+        }
+    }
+
+    /** Moves the whole pattern (every lane) one step later (+1) or earlier (-1), round the end. */
+    void shift (int delta)
+    {
+        const int len = patternSteps();
+        edit.getUndoManager().beginNewTransaction ("Shift Pattern");
+
+        for (int l = -1; l < numLanes; ++l)
+        {
+            std::vector<float> was;
+            for (int i = 0; i < len; ++i)
+                was.push_back ((l < 0 ? steps[(size_t) i].on : steps[(size_t) i].lane (l)).param().getCurrentBaseValue());
+            for (int i = 0; i < len; ++i)
+                (l < 0 ? steps[(size_t) i].on : steps[(size_t) i].lane (l)).param().setParameter (was[(size_t) (((i - delta) % len + len) % len)], juce::sendNotification);
+        }
+    }
+
+    /** Back to the pattern a new Step Sequencer starts with. */
+    void loadDefaults()
+    {
+        edit.getUndoManager().beginNewTransaction ("Start Over");
+        for (auto& p : params)
+            p->getParameter().setParameter (p->getParameter().getDefaultValue().value_or (p->getParameter().getCurrentBaseValue()), juce::sendNotification);
+    }
+
+    bool canDouble() const      { return patternSteps() * 2 <= numSteps; }
+
+    /** Twice as many steps, the second half a copy of the first, ready to be changed. */
+    void doubleLength()
+    {
+        const int len = patternSteps();
+        if (! canDouble()) return;
+        edit.getUndoManager().beginNewTransaction ("Double Pattern");
+
+        for (int i = 0; i < len; ++i)
+        {
+            auto& from = steps[(size_t) i];
+            auto& to = steps[(size_t) (i + len)];
+            to.on.param().setParameter (from.on.param().getCurrentBaseValue(), juce::sendNotification);
+            for (int l = 0; l < numLanes; ++l)
+                to.lane (l).param().setParameter (from.lane (l).param().getCurrentBaseValue(), juce::sendNotification);
+        }
+        length.param().setParameter ((float) (len * 2), juce::sendNotification);
+    }
+
     std::array<Step, numSteps> steps;
-    Param rateP, length, swing, gate, root, follow;
+    std::array<Param, numLanes> laneSteps;
+    Param rateP, length, swing, gate, root, follow, direction, scale;
 
 private:
     std::array<int, 128> keysDown {};
     int transposeNote = -1;
-    long long freeStep = 0;
-    double nextFreeStepBeat = -1.0;
+    double freeOrigin = -1.0;           // stopped, following keys: the beat the first key went down on
+    juce::uint32 turn = 0;              // changes each time the pattern starts over, so chance differs each time round a loop
+    std::atomic<long long> currentCount { -1 };
 
     void onReset() override
     {
-        freeStep = 0;
-        nextFreeStepBeat = -1.0;
+        freeOrigin = -1.0;
         currentStep = -1;
+        currentCount = -1;
+        turn = rendering ? 1 : turn + 1;    // (a mixdown always rolls the same dice)
+    }
+
+    /** A dice roll that is always the same for the same step count, use and time through. */
+    juce::uint32 roll (long long k, juce::uint32 use) const
+    {
+        auto x = (juce::uint64) k * 0x9E3779B97F4A7C15ull + (juce::uint64) (turn * 7919u + use) * 0xBF58476D1CE4E5B9ull;
+        x ^= x >> 31; x *= 0x94D049BB133111EBull; x ^= x >> 29;
+        return (juce::uint32) (x >> 16);
     }
 
     void process (const te::MidiMessageArray& in, const Block& blk) override
@@ -502,55 +746,75 @@ private:
             }
         }
 
-        const int len = juce::jlimit (1, numSteps, juce::roundToInt (length.get()));
-        const double stepBeats = rateInBeats (rateP.get());
-        const double gateSamples = stepBeats / blk.beatsPerSample * gate.get() / 100.0;
-        const int rootNote = followKeys ? transposeNote : juce::roundToInt (root.get());
-
         if (followKeys && transposeNote < 0)
         {
             onReset();
             return;
         }
 
-        if (blk.playing)
+        // The grid the steps sit on: the song's beats, or (stopped, following keys) beats counted from the first key
+        double origin = 0.0;
+
+        if (! blk.playing)
         {
-            // Start one step back: a swung step can land after the start of its grid slot
-            auto k = (long long) std::floor (blk.startBeat / stepBeats) - 1;
-            for (;; ++k)
+            if (! followKeys)
             {
-                const double beat = (double) k * stepBeats + swingOffset (k, stepBeats, swing.get());
-                if (beat >= blk.endBeat() - 1.0e-9) break;
-                if (beat < blk.startBeat - 1.0e-9) continue;
-                trigger ((int) (k % len), rootNote, blk.sampleAt (beat), gateSamples);
+                currentStep = -1;
+                currentCount = -1;
+                return;
+            }
+
+            if (freeOrigin < 0.0)
+                freeOrigin = blk.startBeat + juce::jmax (0, firstKeyOffset) * blk.beatsPerSample;
+            origin = freeOrigin;
+        }
+
+        const int len = patternSteps();
+        const double stepBeats = rateInBeats (rateP.get());
+        const double start = blk.startBeat - origin, end = blk.endBeat() - origin;
+        const double gateShare = gate.get() / 100.0;
+        const int rootNote = followKeys ? transposeNote : juce::roundToInt (root.get());
+        const int scaleIndex = juce::roundToInt (scale.get());
+        const float swingAmount = swing.get();
+        const auto now = (long long) std::floor (start / stepBeats);
+
+        if (now >= 0)
+        {
+            currentCount = now;
+            currentStep = indexFor (-1, now);
+        }
+
+        // A step can sound up to half a step early (Nudge) and, with Swing, Nudge and Repeat, well
+        // into the steps after it: look at the ones either side of this block
+        for (auto k = juce::jmax (0LL, now - 2); ((double) k - 0.5) * stepBeats < end; ++k)
+        {
+            if (steps[(size_t) indexFor (-1, k)].on.get() < 0.5f)
+                continue;
+
+            if (! everyAllows (juce::roundToInt (steps[(size_t) indexFor (everyLane, k)].every.get()), k / len))
+                continue;
+
+            const float chance = steps[(size_t) indexFor (chanceLane, k)].chance.get();
+            if (chance < 99.5f && (float) (roll (k, 0xc4a9) % 10000u) >= chance * 100.0f)
+                continue;
+
+            const double nudge = steps[(size_t) indexFor (nudgeLane, k)].nudge.get() / 100.0;
+            const double at = juce::jmax (0.0, ((double) k + nudge) * stepBeats + swingOffset (k, stepBeats, swingAmount));
+            const int repeats = juce::jlimit (1, 8, juce::roundToInt (steps[(size_t) indexFor (repeatLane, k)].repeat.get()));
+            const double each = stepBeats / repeats;
+            const double share = gateShare * steps[(size_t) indexFor (lengthLane, k)].length.get() / 100.0;
+            const double lengthSamples = each * (repeats > 1 ? juce::jmin (0.95, share) : share) / blk.beatsPerSample;
+
+            const int note = rootNote + snapToScale (juce::roundToInt (steps[(size_t) indexFor (pitchLane, k)].pitch.get()), scaleIndex);
+            const float velocity = steps[(size_t) indexFor (velocityLane, k)].velocity.get() / 127.0f;
+
+            for (int j = 0; j < repeats; ++j)
+            {
+                const double hit = at + j * each;
+                if (hit >= start - 1.0e-9 && hit < end - 1.0e-9)
+                    playNote (1, note, velocity, blk.sampleAt (hit + origin), lengthSamples);
             }
         }
-        else if (followKeys)
-        {
-            if (nextFreeStepBeat < 0.0)
-                nextFreeStepBeat = blk.startBeat + juce::jmax (0, firstKeyOffset) * blk.beatsPerSample;
-
-            while (nextFreeStepBeat < blk.endBeat())
-            {
-                trigger ((int) (freeStep % len), rootNote, blk.sampleAt (nextFreeStepBeat), gateSamples);
-                nextFreeStepBeat += stepBeats + swingOffset (freeStep + 1, stepBeats, swing.get()) - swingOffset (freeStep, stepBeats, swing.get());
-                ++freeStep;
-            }
-        }
-        else
-        {
-            currentStep = -1;
-        }
-    }
-
-    void trigger (int index, int rootNote, int sampleOffset, double gateSamples)
-    {
-        currentStep = index;
-        auto& s = steps[(size_t) index];
-        if (s.on.get() < 0.5f)
-            return;
-
-        playNote (1, rootNote + juce::roundToInt (s.pitch.get()), s.velocity.get() / 127.0f, sampleOffset, gateSamples);
     }
 };
 
@@ -633,60 +897,83 @@ private:
 };
 
 //==============================================================================
-/** The 16-step grid: click to toggle steps, drag bars to set pitch and velocity. */
+/** The step grid: a row of on/off buttons, and under it the bars of one lane (drag to set them). */
 class StepGrid : public juce::Component, private juce::Timer
 {
 public:
-    StepGrid (StepsDevice& d) : dev (d)     { startTimerHz (30); }
+    StepGrid (StepsDevice& d) : dev (d)
+    {
+        setTitle ("Steps");
+        startTimerHz (30);
+    }
+
+    void setLane (int l)        { lane = l; repaint(); }
+    int getLane() const         { return lane; }
+
+    /** 16 across until something needs more. */
+    int columns() const
+    {
+        return dev.patternSteps() > 16 || dev.stepsInLane (lane) > 16 ? 32 : 16;
+    }
 
     void paint (juce::Graphics& g) override
     {
-        const int len = juce::roundToInt (dev.length.get());
-        const int playing = dev.getCurrentStep();
+        const int cols = columns();
+        const int len = dev.patternSteps(), laneLen = dev.stepsInLane (lane);
+        const auto count = dev.getCurrentCount();
+        const int playing = count >= 0 ? dev.indexFor (-1, count) : -1;
+        const int lanePlaying = count >= 0 ? dev.indexFor (lane, count) : -1;
+        const auto colour = laneColour (lane);
+        g.setFont (juce::FontOptions (cols > 16 ? 8.5f : 9.5f));
 
-        for (int i = 0; i < StepsDevice::numSteps; ++i)
+        for (int i = 0; i < cols; ++i)
         {
             auto& s = dev.steps[(size_t) i];
-            const bool active = i < len, on = s.on.get() > 0.5f;
+            const bool on = s.on.get() > 0.5f;
             auto col = cell (i);
-            float alpha = active ? 1.0f : 0.3f;
 
             // On/off
             auto onBox = col.withHeight (onH).reduced (1.5f);
-            g.setColour ((on ? Colours::accent : Colours::panelLight).withMultipliedAlpha (alpha));
+            g.setColour ((on ? Colours::accent : Colours::panelLight).withMultipliedAlpha (i < len ? 1.0f : 0.3f));
             g.fillRoundedRectangle (onBox, 3.0f);
             if (i == playing)
             {
                 g.setColour (Colours::text);
                 g.drawRoundedRectangle (onBox, 3.0f, 2.0f);
             }
-
-            // Pitch: bar from the centre line
-            auto pitchBox = col.withTrimmedTop (onH + 4).withHeight (pitchH).reduced (1.5f, 0);
-            g.setColour (Colours::display);
-            g.fillRect (pitchBox);
-            const float p = s.pitch.get() / 24.0f;
-            auto mid = pitchBox.getCentreY();
-            auto y = mid - p * pitchBox.getHeight() * 0.5f;
-            g.setColour (Colours::solo.withAlpha (on ? alpha : alpha * 0.4f));
-            g.fillRect (juce::Rectangle<float>::leftTopRightBottom (pitchBox.getX(), juce::jmin (mid, y), pitchBox.getRight(), juce::jmax (mid, y) + 1.0f));
-            g.setColour (Colours::text.withAlpha (alpha));
-            g.setFont (juce::FontOptions (9.5f));
-            g.drawText (s.pitch.param().getCurrentValueAsString(), pitchBox.toNearestInt().removeFromBottom (12), juce::Justification::centred);
-
-            // Velocity: bar from the bottom
-            auto velBox = col.withTrimmedTop (onH + pitchH + 8).reduced (1.5f, 0);
-            g.setColour (Colours::display);
-            g.fillRect (velBox);
-            const float v = s.velocity.get() / 127.0f;
-            g.setColour (Colours::accent.withAlpha ((on ? 0.8f : 0.3f) * alpha));
-            g.fillRect (velBox.withTop (velBox.getBottom() - velBox.getHeight() * v));
-
             if (i % 4 == 0)
             {
-                g.setColour (Colours::textDim);
-                g.setFont (juce::FontOptions (9.0f));
+                g.setColour (on && i < len ? Colours::textInverse : Colours::textDim);
                 g.drawText (juce::String (i + 1), onBox.toNearestInt(), juce::Justification::centred);
+            }
+
+            // The lane's bar: from the middle for values that go both ways, otherwise from the bottom
+            const float alpha = i < laneLen ? 1.0f : 0.3f;
+            auto box = laneBox (i);
+            g.setColour (i == lanePlaying ? Colours::display.interpolatedWith (Colours::text, 0.14f) : Colours::display);
+            g.fillRect (box);
+
+            auto& p = s.lane (lane).param();
+            const auto range = p.getValueRange();
+            const float v = p.getCurrentValue();
+            const float n = p.valueRange.convertTo0to1 (juce::jlimit (range.getStart(), range.getEnd(), v));
+            const bool sounds = on || laneLen != len;    // (a lane with its own count isn't tied to this column's step)
+            g.setColour (colour.withAlpha ((sounds ? 0.85f : 0.3f) * alpha));
+
+            if (range.getStart() < 0.0f)
+            {
+                const float mid = box.getCentreY(), y = box.getBottom() - n * box.getHeight();
+                g.fillRect (juce::Rectangle<float>::leftTopRightBottom (box.getX(), juce::jmin (mid, y), box.getRight(), juce::jmax (mid, y) + 1.0f));
+            }
+            else
+            {
+                g.fillRect (box.withTop (box.getBottom() - juce::jmax (1.0f, n * box.getHeight())));
+            }
+
+            if (auto text = cellText (lane, v); text.isNotEmpty())
+            {
+                g.setColour (Colours::text.withAlpha (alpha));
+                g.drawText (text, box.toNearestInt().removeFromBottom (12), juce::Justification::centred);
             }
         }
     }
@@ -696,10 +983,9 @@ public:
         auto i = stepAt (e.position.x);
         if (i < 0) return;
 
-        dragStep = i;
-        area = e.position.y < onH ? 0 : e.position.y < onH + pitchH + 4 ? 1 : 2;
+        onRow = e.position.y < onH + 2.0f;
 
-        if (area == 0)
+        if (onRow)
         {
             auto& on = dev.steps[(size_t) i].on.param();
             paintValue = on.getCurrentValue() > 0.5f ? 0.0f : 1.0f;
@@ -718,7 +1004,7 @@ public:
         if (i < 0) return;
 
         // Dragging across steps paints the same on/off value, or sets bars as you go
-        if (area == 0)
+        if (onRow)
             dev.steps[(size_t) i].on.param().setParameter (paintValue, juce::sendNotification);
         else
             setFromMouse (i, e.position.y);
@@ -728,89 +1014,262 @@ public:
     void mouseDoubleClick (const juce::MouseEvent& e) override
     {
         auto i = stepAt (e.position.x);
-        if (i < 0) return;
-        if (area == 1) dev.steps[(size_t) i].pitch.param().setParameter (0.0f, juce::sendNotification);
-        if (area == 2) dev.steps[(size_t) i].velocity.param().setParameter (100.0f, juce::sendNotification);
+        if (i < 0 || onRow) return;
+        auto& p = dev.steps[(size_t) i].lane (lane).param();
+        p.setParameter (p.getDefaultValue().value_or (p.getCurrentBaseValue()), juce::sendNotification);
+        repaint();
+    }
+
+    static juce::Colour laneColour (int l)
+    {
+        static const int which[StepsDevice::numLanes] = { -1, 0, 2, 4, 5, 6, 3 };
+        return which[l] < 0 ? Colours::solo : Colours::clips[(size_t) which[l]];
     }
 
 private:
     StepsDevice& dev;
-    static constexpr float onH = 22.0f, pitchH = 70.0f;
-    int dragStep = -1, area = 0, lastStep = -2;
+    static constexpr float onH = 20.0f;
+    int lane = StepsDevice::pitchLane;
+    bool onRow = false;
     float paintValue = 1.0f;
+    long long lastCount = -2;
+    int lastCols = 0;
 
     juce::Rectangle<float> cell (int i) const
     {
-        auto w = (float) getWidth() / StepsDevice::numSteps;
+        auto w = (float) getWidth() / (float) columns();
         return { w * (float) i, 0.0f, w, (float) getHeight() };
     }
 
+    juce::Rectangle<float> laneBox (int i) const     { return cell (i).withTrimmedTop (onH + 4.0f).reduced (1.5f, 0.0f); }
+
     int stepAt (float x) const
     {
-        auto i = (int) (x / ((float) getWidth() / StepsDevice::numSteps));
-        return i >= 0 && i < StepsDevice::numSteps ? i : -1;
+        auto i = (int) (x / ((float) getWidth() / (float) columns()));
+        return i >= 0 && i < columns() ? i : -1;
+    }
+
+    /** The few characters shown in a cell: nothing where the value is the ordinary one. */
+    static juce::String cellText (int lane, float v)
+    {
+        const int n = juce::roundToInt (v);
+
+        switch (lane)
+        {
+            case StepsDevice::pitchLane:
+            case StepsDevice::nudgeLane:    return n == 0 ? juce::String() : (n > 0 ? "+" : "") + juce::String (n);
+            case StepsDevice::velocityLane: return juce::String (n);
+            case StepsDevice::lengthLane:   return n == 100 ? juce::String() : juce::String (n);
+            case StepsDevice::chanceLane:   return n >= 100 ? juce::String() : juce::String (n);
+            case StepsDevice::repeatLane:   return n <= 1 ? juce::String() : juce::String (n) + "x";
+            case StepsDevice::everyLane:
+            {
+                if (n <= 0) return {};
+                const int of = n <= 2 ? 2 : n <= 5 ? 3 : 4;
+                return juce::String (n - (of == 2 ? 0 : of == 3 ? 2 : 5)) + ":" + juce::String (of);
+            }
+            default: break;
+        }
+        return {};
     }
 
     void setFromMouse (int i, float y)
     {
-        auto& s = dev.steps[(size_t) i];
-        if (area == 1)
-        {
-            auto box = cell (i).withTrimmedTop (onH + 4).withHeight (pitchH);
-            auto p = juce::jlimit (-24.0f, 24.0f, std::round ((box.getCentreY() - y) / (box.getHeight() * 0.5f) * 24.0f));
-            s.pitch.param().setParameter (p, juce::sendNotification);
-        }
-        else
-        {
-            auto box = cell (i).withTrimmedTop (onH + pitchH + 8);
-            auto v = juce::jlimit (1.0f, 127.0f, std::round ((box.getBottom() - y) / box.getHeight() * 127.0f));
-            s.velocity.param().setParameter (v, juce::sendNotification);
-        }
+        auto box = laneBox (i);
+        auto& p = dev.steps[(size_t) i].lane (lane).param();
+        const float n = juce::jlimit (0.0f, 1.0f, (box.getBottom() - y) / box.getHeight());
+        p.setParameter (std::round (p.valueRange.convertFrom0to1 (n)), juce::sendNotification);
     }
 
     void timerCallback() override
     {
-        auto s = dev.getCurrentStep();
-        if (s != lastStep) { lastStep = s; repaint(); }
+        const auto c = dev.getCurrentCount();
+        const int cols = columns();
+        if (c != lastCount || cols != lastCols) { lastCount = c; lastCols = cols; repaint(); }
     }
 };
 
-class StepsView : public juce::Component
+/** Chooses which lane the grid shows. */
+class LaneTabs : public juce::Component
+{
+public:
+    std::function<void (int)> onChange;
+    int current = 0;
+
+    LaneTabs()      { setTitle ("Lane"); }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto names = StepsDevice::laneNames();
+        const float w = (float) getWidth() / (float) names.size();
+
+        for (int i = 0; i < names.size(); ++i)
+        {
+            auto cell = juce::Rectangle<float> (w * (float) i, 0.0f, w, (float) getHeight()).reduced (1.0f);
+            const bool on = i == current;
+            g.setColour (on ? StepGrid::laneColour (i) : Colours::panelDark);
+            g.fillRoundedRectangle (cell, 3.0f);
+            g.setColour (on ? Colours::textInverse : Colours::textDim);
+            g.setFont (juce::FontOptions (11.0f, on ? juce::Font::bold : juce::Font::plain));
+            g.drawFittedText (names[i], cell.toNearestInt().reduced (2), juce::Justification::centred, 1);
+        }
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        current = juce::jlimit (0, StepsDevice::numLanes - 1, e.x * StepsDevice::numLanes / juce::jmax (1, getWidth()));
+        repaint();
+        if (onChange) onChange (current);
+    }
+};
+
+class StepsView : public juce::Component, private juce::Timer
 {
 public:
     StepsView (StepsDevice& d)
-        : grid (d), rateChoice (d.rateP.param(), MidiEffectDevice::rateNames(), Colours::solo),
+        : dev (d), grid (d),
+          rateChoice (d.rateP.param(), MidiEffectDevice::rateNames(), Colours::solo),
+          directionChoice (d.direction.param(), StepsDevice::directionNames()),
           length (d.length.param()), swing (d.swing.param()), gate (d.gate.param()), root (d.root.param()),
           follow (d.follow.param(), "Follow Keys")
     {
-        for (juce::Component* c : { (juce::Component*) &grid, (juce::Component*) &rateChoice, (juce::Component*) &length,
-                                    (juce::Component*) &swing, (juce::Component*) &gate, (juce::Component*) &root, (juce::Component*) &follow })
+        for (juce::Component* c : { (juce::Component*) &grid, (juce::Component*) &tabs, (juce::Component*) &rateChoice, (juce::Component*) &directionChoice,
+                                    (juce::Component*) &length, (juce::Component*) &swing, (juce::Component*) &gate, (juce::Component*) &root,
+                                    (juce::Component*) &follow, (juce::Component*) &scaleButton, (juce::Component*) &laneStepsButton, (juce::Component*) &toolsButton })
             addAndMakeVisible (c);
+
+        rateChoice.setTitle ("Rate");
+        directionChoice.setTitle ("Direction");
+        follow.setTitle ("Follow Keys");
+        scaleButton.setTooltip ("Keeps every pitch to the notes of a scale, counted from the Root");
+        laneStepsButton.setTooltip ("How many steps this lane goes round in. Give it a different number from the pattern and the two drift apart, then meet again.");
+        toolsButton.setTooltip ("Randomise, shift, reset or double the pattern");
+
+        tabs.onChange = [this] (int l) { grid.setLane (l); timerCallback(); };
+        scaleButton.onClick = [this] { showScaleMenu(); };
+        laneStepsButton.onClick = [this] { showLaneStepsMenu(); };
+        toolsButton.onClick = [this] { showToolsMenu(); };
+        timerCallback();
+        startTimerHz (5);
     }
 
     void resized() override
     {
         auto r = getLocalBounds();
-        auto side = r.removeFromLeft (200);
+        auto side = r.removeFromLeft (216);
         rateChoice.setBounds (side.removeFromTop (22));
-        side.removeFromTop (4);
-        follow.setBounds (side.removeFromBottom (22));
-        side.removeFromBottom (2);
-        auto rowH = side.getHeight() / 2;
-        auto row1 = side.removeFromTop (rowH);
-        length.setBounds (row1.removeFromLeft (100));
-        root.setBounds (row1);
-        swing.setBounds (side.removeFromLeft (100));
-        gate.setBounds (side);
+        side.removeFromTop (3);
+        directionChoice.setBounds (side.removeFromTop (20));
+        side.removeFromTop (3);
+        auto bottom = side.removeFromBottom (22);
+        follow.setBounds (bottom.removeFromRight (84));
+        bottom.removeFromRight (4);
+        scaleButton.setBounds (bottom);
+        side.removeFromBottom (3);
+        const int w = side.getWidth() / 4;
+        for (auto* k : { &length, &root, &swing, &gate })
+            k->setBounds (side.removeFromLeft (w));
+
         r.removeFromLeft (8);
+        auto top = r.removeFromTop (20);
+        toolsButton.setBounds (top.removeFromRight (58));
+        top.removeFromRight (4);
+        laneStepsButton.setBounds (top.removeFromRight (138));
+        top.removeFromRight (6);
+        tabs.setBounds (top);
+        r.removeFromTop (4);
         grid.setBounds (r);
     }
 
 private:
+    StepsDevice& dev;
     StepGrid grid;
-    DeviceUI::Choice rateChoice;
+    LaneTabs tabs;
+    DeviceUI::Choice rateChoice, directionChoice;
     DeviceUI::Knob length, swing, gate, root;
     DeviceUI::Toggle follow;
+    juce::TextButton scaleButton, laneStepsButton, toolsButton { "Tools" };
+
+    static void set (te::AutomatableParameter& p, float v)
+    {
+        p.parameterChangeGestureBegin();
+        p.setParameter (v, juce::sendNotification);
+        p.parameterChangeGestureEnd();
+    }
+
+    void showScaleMenu()
+    {
+        juce::PopupMenu m;
+        const int current = juce::roundToInt (dev.scale.get());
+        for (int i = 0; i < (int) StepsDevice::scales().size(); ++i)
+            m.addItem (i + 1, StepsDevice::scales()[(size_t) i].name, true, i == current);
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&scaleButton), [safe = juce::Component::SafePointer<StepsView> (this)] (int result)
+        {
+            if (safe != nullptr && result > 0)
+                set (safe->dev.scale.param(), (float) (result - 1));
+        });
+    }
+
+    void showLaneStepsMenu()
+    {
+        juce::PopupMenu m;
+        const int lane = grid.getLane();
+        const int current = juce::roundToInt (dev.laneSteps[(size_t) lane].get());
+        m.addItem (1, "Same as the Pattern", true, current == 0);
+        m.addSeparator();
+        for (int i = 1; i <= StepsDevice::numSteps; ++i)
+        {
+            if (i == 17) m.addColumnBreak();
+            m.addItem (i + 1, juce::String (i) + (i == 1 ? " step" : " steps"), true, current == i);
+        }
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&laneStepsButton), [safe = juce::Component::SafePointer<StepsView> (this), lane] (int result)
+        {
+            if (safe != nullptr && result > 0)
+                set (safe->dev.laneSteps[(size_t) lane].param(), (float) (result - 1));
+        });
+    }
+
+    void showToolsMenu()
+    {
+        juce::PopupMenu m;
+        const int lane = grid.getLane();
+        const auto name = StepsDevice::laneNames()[lane];
+        m.addItem (1, "Randomise " + name);
+        m.addItem (2, "Randomise Which Steps Play");
+        m.addSeparator();
+        m.addItem (3, "Shift Pattern Left");
+        m.addItem (4, "Shift Pattern Right");
+        m.addItem (5, "Double Pattern", dev.canDouble());
+        m.addSeparator();
+        m.addItem (6, "Reset " + name);
+        m.addItem (7, "Start Over");
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&toolsButton), [safe = juce::Component::SafePointer<StepsView> (this), lane] (int result)
+        {
+            if (safe == nullptr) return;
+            auto& d = safe->dev;
+            switch (result)
+            {
+                case 1: d.randomiseLane (lane); break;
+                case 2: d.randomiseSteps(); break;
+                case 3: d.shift (-1); break;
+                case 4: d.shift (1); break;
+                case 5: d.doubleLength(); break;
+                case 6: d.resetLane (lane); break;
+                case 7: d.loadDefaults(); break;
+                default: break;
+            }
+            safe->grid.repaint();
+        });
+    }
+
+    void timerCallback() override
+    {
+        scaleButton.setButtonText ("Scale: " + dev.scale.param().getCurrentValueAsString());
+        const int lane = grid.getLane();
+        const int own = juce::roundToInt (dev.laneSteps[(size_t) lane].get());
+        laneStepsButton.setButtonText (StepsDevice::laneNames()[lane] + (own > 0 ? " steps: " + juce::String (own) : juce::String (" steps: Pattern")));
+        tabs.current = lane;
+    }
 };
 
 inline std::unique_ptr<juce::Component> ArpDevice::createDeviceView()      { return std::make_unique<ArpView> (*this); }
