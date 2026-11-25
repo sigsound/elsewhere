@@ -14,6 +14,7 @@
 #include "OrganicDevice.h"
 #include "HazeDevice.h"
 #include "MidiEffects.h"
+#include "StepsDevice.h"
 #include "EchoDevice.h"
 
 namespace elsewhere
@@ -36,7 +37,7 @@ const std::vector<DeviceRegistry::Entry>& DeviceRegistry::getAll()
           [] (te::PluginCreationInfo i) -> te::Plugin::Ptr { return new MonoDevice (i); } },
         { ArpDevice::xmlTypeName,        "Arpeggiator", "Plays held notes as a pattern, in time with the song", false,
           [] (te::PluginCreationInfo i) -> te::Plugin::Ptr { return new ArpDevice (i); }, true },
-        { StepsDevice::xmlTypeName,      "Step Sequencer", "Note sequencer of up to 32 steps, with chance, repeats, slides and lanes that go round at their own length", false,
+        { StepsDevice::xmlTypeName,      "Step Sequencer", "Rows of steps to draw on, one for each note or drum, with chance, repeats, slides and rows that go round at their own length", false,
           [] (te::PluginCreationInfo i) -> te::Plugin::Ptr { return new StepsDevice (i); }, true },
         { EqDevice::xmlTypeName,         "EQ",         "8-band parametric EQ with a spectrum analyzer", false,
           [] (te::PluginCreationInfo i) -> te::Plugin::Ptr { return new EqDevice (i); } },
