@@ -2746,6 +2746,7 @@ private:
             m.addSeparator();
             m.addCommandItem (cm, cmdPlayStop);
             m.addCommandItem (cm, cmdRecord);
+            m.addCommandItem (cm, cmdCaptureMidi);
             m.addCommandItem (cm, cmdToggleLoop);
             m.addCommandItem (cm, cmdToggleMetronome);
             m.addCommandItem (cm, cmdAutomationArm);

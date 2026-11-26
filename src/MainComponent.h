@@ -23,6 +23,7 @@
 #include "ControlSurfaces.h"
 #include "drums/DrumTrack.h"
 #include "devices/ReferenceDevice.h"
+#include "MidiCapture.h"
 
 namespace elsewhere
 {
@@ -96,7 +97,8 @@ enum CommandIDs
     cmdNextArea,
     cmdPrevArea,
     cmdListenReference,
-    cmdChooseReference
+    cmdChooseReference,
+    cmdCaptureMidi
 };
 
 //==============================================================================

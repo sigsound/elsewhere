@@ -1364,7 +1364,7 @@ void MainComponent::getAllCommands (juce::Array<juce::CommandID>& commands)
                          cmdPrevTransient, cmdNextTransient,
                          cmdEditShuffle, cmdEditSlip, cmdEditSpot, cmdEditGrid,
                          cmdSelectPrevTrack, cmdSelectNextTrack, cmdMuteTrack, cmdSoloTrack, cmdArmTrack, cmdNextArea, cmdPrevArea,
-                         cmdListenReference, cmdChooseReference });
+                         cmdListenReference, cmdChooseReference, cmdCaptureMidi });
 
     for (int i = cmdGoToMarker1; i <= cmdGoToMarkerLast; ++i)
         commands.add (i);
@@ -1542,6 +1542,10 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
             info.addDefaultKeypress ('r', 0);
             break;
         }
+        case cmdCaptureMidi:
+            info.setInfo ("Capture MIDI", "Turn what you just played into a clip, even if you weren't recording", "Transport", 0);
+            info.addDefaultKeypress ('c', cmd | shift);
+            break;
         case cmdChooseReference: info.setInfo ("Compare with Reference...", "Choose a finished song to compare your mix with, at matched loudness", "Transport", 0); break;
         case cmdGoLive:
             info.setInfo ("Go Live", "Play together over the internet", "Transport", 0);
@@ -1688,6 +1692,28 @@ bool MainComponent::perform (const InvocationInfo& info)
             }
             break;
         case cmdChooseReference: chooseReference(); break;
+        case cmdCaptureMidi:
+        {
+            auto& edit = project->getEdit();
+            edit.getUndoManager().beginNewTransaction ("Capture MIDI");
+            auto clips = MidiCapture::capture (edit);
+
+            if (clips.isEmpty())
+            {
+                A11y::announce ("Nothing played to capture");
+                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Capture MIDI",
+                                                        "Nothing was played in the last 30 seconds. Play something on a MIDI keyboard "
+                                                        "with an instrument track selected, then capture it.");
+                break;
+            }
+
+            selectionManager.deselectAll();
+            for (auto* c : clips)
+                selectionManager.addToSelection (c);
+
+            A11y::announce ("Captured " + juce::String (clips.size()) + (clips.size() == 1 ? " clip" : " clips"));
+            break;
+        }
         case cmdSetName:        showNameDialog(); break;
         case cmdSelectPrevTrack: selectTrackFromKeyboard (-1); break;
         case cmdSelectNextTrack: selectTrackFromKeyboard (1); break;
