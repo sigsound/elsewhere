@@ -379,6 +379,58 @@ int run (te::Engine& engine, const juce::File& outDir)
                    "with No notice, nothing is added");
     }
 
+    // Match level: a device that turns the sound up by 6 dB (its most) plays at its input's level with it on
+    {
+        auto matchFile = Project::createProjectFolder (outDir, "Match");
+        auto matchSamples = matchFile.getParentDirectory().getChildFile ("Samples/Imported");
+        writeSine (matchSamples.getChildFile ("tone.wav"), 6.0, 0.02f, 0.1f);
+        Project mp (engine, matchFile);
+        auto& me = mp.getEdit();
+        me.ensureNumberOfAudioTracks (1);
+        auto track = te::getAudioTracks (me)[0];
+        track->insertWaveClip ("tone", matchSamples.getChildFile ("tone.wav"), secs (0, 6), false);
+
+        for (auto plugin : me.getMasterPluginList().getPlugins())
+            if (dynamic_cast<te::VolumeAndPanPlugin*> (plugin) == nullptr && dynamic_cast<te::LevelMeterPlugin*> (plugin) == nullptr)
+                plugin->deleteFromParent();
+
+        auto boost = me.getPluginCache().createNewPlugin (te::VolumeAndPanPlugin::xmlTypeName, {});
+        track->pluginList.insertPlugin (boost, 0, nullptr);
+        auto* vol = dynamic_cast<te::VolumeAndPanPlugin*> (boost.get());
+
+        Export::Settings ms;
+        ms.tails = false;
+        ms.format = te::RenderFormat::wav;
+        ms.bitDepth = 32;
+        ms.sampleRate = 48000.0;
+        ms.reserveRights = false;
+
+        // The last two seconds, once the level has settled
+        auto tailDb = [] (const juce::AudioBuffer<float>& b)
+        {
+            auto n = juce::jmin (b.getNumSamples(), 96000);
+            return b.getNumSamples() == 0 ? -200.0f : juce::Decibels::gainToDecibels (b.getRMSLevel (0, b.getNumSamples() - n, n));
+        };
+
+        auto renderAs = [&] (const juce::String& name)
+        {
+            auto plan = Export::plan (me, ms, mp.getFolder().getChildFile ("Exports"), name);
+            render (me, plan);
+            return tailDb (readAll (plan.mixFile));
+        };
+
+        vol->setVolumeDb (0.0f);
+        const auto dry = renderAs ("Dry");
+        vol->setVolumeDb (6.0f);
+        const auto loud = renderAs ("Loud");
+        boost->setGainMatched (true);
+        const auto matched = renderAs ("Matched");
+
+        log.check (vol != nullptr && std::abs (loud - dry - 6.0f) < 0.5f, "a +6 dB device plays 6 dB louder (" + juce::String (loud - dry, 2) + " dB)");
+        log.check (std::abs (matched - dry) < 0.5f, "with Match Level on, it plays at its input's level (" + juce::String (matched - dry, 2) + " dB)");
+        log.check (std::abs (boost->getGainMatchDb() + 6.0f) < 0.5f, "and reports the gain it applied (" + juce::String (boost->getGainMatchDb(), 2) + " dB)");
+    }
+
     std::cout << "Export tests\n" << log.text << (log.failures == 0 ? "All passed\n" : juce::String (log.failures) + " failed\n");
     return log.failures;
 }

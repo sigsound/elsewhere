@@ -391,6 +391,13 @@ private:
         juce::PopupMenu m;
         m.addItem ("Open", [this, ref] { openPlugin (*ref); });
         m.addItem (p.isEnabled() ? "Bypass" : "Turn On", [ref] { ref->setEnabled (! ref->isEnabled()); });
+
+        if (! p.isSynth())
+            m.addItem ("Match Level", true, p.isGainMatched(), [ref]
+            {
+                ref->edit.getUndoManager().beginNewTransaction ("Match Level");
+                ref->setGainMatched (! ref->isGainMatched());
+            });
         m.addSeparator();
         m.addItem ("Remove", [ref, &edit = track->edit]
         {

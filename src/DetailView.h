@@ -48,6 +48,19 @@ public:
         menuButton.setTitle ("Device Menu");
         addAndMakeVisible (menuButton);
 
+        // Match level: the device's output follows the loudness of its input, so turning it on and
+        // off compares its sound, not its volume. Instruments make their own sound, so they don't get it.
+        if (! p.isSynth())
+        {
+            matchButton.setToggleState (p.isGainMatched(), juce::dontSendNotification);
+            matchButton.onClick = [this] { setGainMatched (! plugin->isGainMatched()); };
+            matchButton.setTooltip ("Match level: keep this device's output as loud as its input, "
+                                    "so turning it on and off compares the sound, not the volume");
+            addAndMakeVisible (matchButton);
+        }
+
+        plugin->state.addListener (this);
+
         // A key input: which track this device listens to
         if (Routing::canSidechain (p))
         {
@@ -55,7 +68,6 @@ public:
             keyButton.setTitle ("Sidechain");
             keyButton.setTooltip ("Sidechain: let another track's sound drive this device");
             addAndMakeVisible (keyButton);
-            plugin->state.addListener (this);
             updateKey();
         }
 
@@ -113,7 +125,8 @@ public:
 
         g.setColour (plugin->isEnabled() ? Colours::text : Colours::textDim);
         g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
-        g.drawText (plugin->getName(), title.toNearestInt().withTrimmedLeft (26).withTrimmedRight (52 + (keyButton.isVisible() ? keyButton.getWidth() + 4 : 0)),
+        g.drawText (plugin->getName(), title.toNearestInt().withTrimmedLeft (26).withTrimmedRight (52 + (keyButton.isVisible() ? keyButton.getWidth() + 4 : 0)
+                                                                                                   + (matchButton.isVisible() ? matchButton.getWidth() + 4 : 0)),
                     juce::Justification::centredLeft, true);
 
         if (knobs.isEmpty() && deviceView == nullptr)
@@ -136,6 +149,12 @@ public:
         menuButton.setBounds (title.removeFromRight (20));
         title.removeFromRight (2);
         editButton.setBounds (title.removeFromRight (24));
+
+        if (matchButton.isVisible())
+        {
+            title.removeFromRight (4);
+            matchButton.setBounds (title.removeFromRight (juce::jmin (44, title.getWidth() / 3)));
+        }
 
         if (keyButton.isVisible())
         {
@@ -203,6 +222,7 @@ private:
     bool onTitle = false, dragging = false;
     te::Plugin::Ptr plugin;
     SmallToggle keyButton { "key", Colours::text };
+    SmallToggle matchButton { "match", Colours::text, "Match Level" };
     juce::TextButton power, editButton { juce::String::fromUTF8 ("\xe2\xa7\x89") }, menuButton { juce::String::fromUTF8 ("\xe2\x8b\xaf") };
     juce::OwnedArray<ParameterSlider> knobs;
     juce::OwnedArray<juce::Label> labels;
@@ -251,6 +271,15 @@ private:
     {
         if (v == plugin->state && id == te::IDs::sidechainSourceID)
             updateKey();
+
+        if (v == plugin->state && id == juce::Identifier ("gainMatch"))
+            matchButton.setToggleState (plugin->isGainMatched(), juce::dontSendNotification);
+    }
+
+    void setGainMatched (bool b)
+    {
+        plugin->edit.getUndoManager().beginNewTransaction (b ? "Match Level" : "Stop Matching Level");
+        plugin->setGainMatched (b);
     }
 
     void showMenu()
@@ -260,6 +289,10 @@ private:
         auto* list = p->getOwnerList();
 
         m.addItem ("Open Editor", [p] { p->showWindowExplicitly(); });
+
+        if (! p->isSynth())
+            m.addItem ("Match Level", true, p->isGainMatched(), [this] { setGainMatched (! plugin->isGainMatched()); });
+
         m.addSeparator();
 
         m.addItem ("Save Preset...", [p]
