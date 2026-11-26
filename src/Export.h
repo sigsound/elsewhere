@@ -189,6 +189,21 @@ namespace Export
         return p.notice.has_value() ? RightsNotice::write (f, *p.notice) : juce::String();
     }
 
+    /** The file format, sample rate, dither and tails the settings ask for, as a stereo render of
+        the whole edit (the range and what's in it are up to the caller). */
+    inline te::RenderSpecification renderSpecFor (const Settings& s)
+    {
+        te::RenderSpecification spec;
+        spec.format = s.format;
+        spec.sampleRate = s.sampleRate;
+        spec.bitDepth = s.hasBitDepth() ? s.bitDepth : 16;
+        spec.quality = s.hasBitDepth() ? 0 : s.quality;
+        spec.dither = s.canDither() && s.dither;
+        spec.includeTails = s.tails;
+        spec.channelLayout = "stereo";
+        return spec;
+    }
+
     /** Plans an export into `exportsFolder` (the project's Exports folder), named after the project. */
     inline Plan plan (te::Edit& edit, const Settings& s, const juce::File& exportsFolder, const juce::String& name)
     {
@@ -196,15 +211,8 @@ namespace Export
         auto ext = extensionFor (s.format);
         const bool stems = s.what != What::mix, mix = s.what != What::stems;
 
-        te::RenderSpecification base;
-        base.format = s.format;
-        base.sampleRate = s.sampleRate;
-        base.bitDepth = s.hasBitDepth() ? s.bitDepth : 16;
-        base.quality = s.hasBitDepth() ? 0 : s.quality;
-        base.dither = s.canDither() && s.dither;
+        auto base = renderSpecFor (s);
         base.time = getRange (edit, s.range);
-        base.includeTails = s.tails;
-        base.channelLayout = "stereo";
 
         auto addJob = [&] (te::RenderSpecification spec, const juce::String& what)
         {
