@@ -4,6 +4,7 @@
 #include "MainComponent.h"
 #include "Mixing.h"
 #include "PluginWindow.h"
+#include "MasteringView.h"
 
 namespace elsewhere
 {
@@ -186,6 +187,24 @@ MainComponent::MainComponent (te::Engine& e, const juce::File& editFile, AppActi
                                                              session.get(), mixer.get(), trackList.get(), clipList.get(), detail.get(), &detailResizer })
         addAndMakeVisible (c);
 
+    // A mastering project: the album in place of the arrangement and session
+    if (Mastering::isMastering (edit))
+    {
+        mastering = std::make_unique<MasteringView> (*viewState);
+        mastering->setFocusContainerType (juce::Component::FocusContainerType::keyboardFocusContainer);
+        mastering->onShowChain = [this] { mixer->onShowDevices(); };
+        mastering->onOpenSong = [this] (const juce::File& song)
+        {
+            // Saved first, so the song opens without asking, and comes back to the album as it was
+            if (project->hasChangedSinceSaved())
+                project->save();
+
+            Mastering::setReturn (props(), project->getEditFile(), song);
+            appActions.openProject (song);
+        };
+        addAndMakeVisible (*mastering);
+    }
+
     detailResizer.setMouseCursor (juce::MouseCursor::UpDownResizeCursor);
     detailResizer.onStart = [this] { detailHeightAtDragStart = layout.detailHeight; };
     detailResizer.onDrag = [this] (int dy)
@@ -197,7 +216,7 @@ MainComponent::MainComponent (te::Engine& e, const juce::File& editFile, AppActi
 
     // New projects start with one MIDI and one audio track
     // (replacing the empty track the engine creates)
-    if (isNewProject)
+    if (isNewProject && mastering == nullptr)
     {
         for (auto t : te::getAudioTracks (edit))
             edit.deleteTrack (t);
@@ -258,6 +277,7 @@ MainComponent::~MainComponent()
     // Components must go before the edit they reference
     project->beforeSave = nullptr;
     project->afterSave = nullptr;
+    mastering.reset();
     detail.reset();   // the live panel refers to the live session
     somewhereLink.reset();
     live.reset();
@@ -1238,6 +1258,9 @@ void MainComponent::resized()
     arrangement->setBounds (r);
     session->setBounds (r);
     mixer->setBounds (r);
+
+    if (mastering != nullptr)
+        mastering->setBounds (r);
 }
 
 void MainComponent::updateViewVisibility()
@@ -1246,6 +1269,14 @@ void MainComponent::updateViewVisibility()
     session->setVisible (isViewShowing (MV::session));
     arrangement->setVisible (isViewShowing (MV::arrangement));
     mixer->setVisible (isViewShowing (MV::mixer));
+
+    if (mastering != nullptr)
+    {
+        session->setVisible (false);
+        arrangement->setVisible (false);
+        mastering->setVisible (! isViewShowing (MV::mixer));
+    }
+
     browser->setVisible (layout.browser);
     trackList->setVisible (layout.trackList);
     clipList->setVisible (layout.clipList);
@@ -1273,6 +1304,10 @@ void MainComponent::setEditMode (EditViewState::EditMode m)
 
 void MainComponent::checkProjectAudio()
 {
+    // An album's audio is its renders, which it makes again itself when they're missing
+    if (mastering != nullptr)
+        return;
+
     auto copied = ProjectAudio::collectExternal (*project);
 
     // Moved within the project (e.g. a folder renamed)? Look there first
@@ -1436,7 +1471,10 @@ void MainComponent::timerCallback()
 
         // The project's name is the window's title, so the status only says what needs saying
         auto foreign = project->getForeignLock();
-        transportBar->setStatusText (foreign ? "Also open by " + foreign->user + " (" + foreign->machine + ")" : juce::String());
+        auto album = Mastering::getReturn (props(), project->getEditFile());
+        transportBar->setStatusText (foreign ? "Also open by " + foreign->user + " (" + foreign->machine + ")"
+                                     : album.existsAsFile() ? "From " + album.getFileNameWithoutExtension() + ": File > Back to Album"
+                                                            : juce::String());
     }
 
     auto phones = somewhereLink->getConnectedNames();
@@ -1470,7 +1508,8 @@ void MainComponent::getAllCommands (juce::Array<juce::CommandID>& commands)
                          cmdPrevTransient, cmdNextTransient,
                          cmdEditShuffle, cmdEditSlip, cmdEditSpot, cmdEditGrid,
                          cmdSelectPrevTrack, cmdSelectNextTrack, cmdMuteTrack, cmdSoloTrack, cmdArmTrack, cmdNextArea, cmdPrevArea,
-                         cmdListenReference, cmdChooseReference, cmdCaptureMidi, cmdExportSeveral });
+                         cmdListenReference, cmdChooseReference, cmdCaptureMidi, cmdExportSeveral,
+                         cmdNewMasteringProject, cmdAddSong, cmdBackToAlbum });
 
     for (int i = cmdGoToMarker1; i <= cmdGoToMarkerLast; ++i)
         commands.add (i);
@@ -1501,6 +1540,22 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
         case cmdSaveAs:         info.setInfo ("Save As...", "Save a copy of the project", "File", 0); info.addDefaultKeypress ('s', cmd | shift); break;
         case cmdExport:         info.setInfo ("Export Audio...", "Render the arrangement to a WAV file", "File", 0); info.addDefaultKeypress ('r', cmd | shift); break;
         case cmdExportSeveral:  info.setInfo ("Export Several Projects...", "Export each of several projects with the same settings", "File", 0); break;
+        case cmdNewMasteringProject:
+            info.setInfo ("New Mastering Project...", "Create a project for mastering the songs of an EP or album together", "File", 0);
+            break;
+        case cmdAddSong:
+            info.setInfo ("Add Song...", "Add songs (Elsewhere projects) to the album", "File", 0);
+            info.setActive (mastering != nullptr);
+            break;
+        case cmdBackToAlbum:
+        {
+            auto album = Mastering::getReturn (props(), project->getEditFile());
+            info.setInfo (album.existsAsFile() ? "Back to " + album.getFileNameWithoutExtension() : juce::String ("Back to Album"),
+                          "Go back to the mastering project this song was opened from", "File", 0);
+            info.setActive (album.existsAsFile() && mastering == nullptr);
+            info.addDefaultKeypress (juce::KeyPress::upKey, cmd | shift);
+            break;
+        }
         case cmdUndo:
             info.setInfo ("Undo " + edit.getUndoManager().getUndoDescription(), "Undo", "Edit", 0);
             info.setActive (edit.getUndoManager().canUndo());
@@ -1735,6 +1790,12 @@ bool MainComponent::perform (const InvocationInfo& info)
         case cmdSaveAs:         appActions.saveProjectAs(); break;
         case cmdExport:         appActions.exportAudio(); break;
         case cmdExportSeveral:  appActions.exportSeveralProjects(); break;
+        case cmdNewMasteringProject:    appActions.newMasteringProject(); break;
+        case cmdAddSong:                if (mastering != nullptr) mastering->chooseSongs(); break;
+        case cmdBackToAlbum:
+            if (auto album = Mastering::getReturn (props(), project->getEditFile()); album.existsAsFile())
+                juce::MessageManager::callAsync ([a = &appActions, album] { a->openProject (album); });
+            break;
         case cmdUndo:           edit.getUndoManager().undo(); break;
         case cmdRedo:           edit.getUndoManager().redo(); break;
         case cmdDelete:         deleteSelected(); break;
@@ -1955,6 +2016,15 @@ void MainComponent::selectTrackFromKeyboard (int delta)
 
     if (onMenuStateChanged)
         onMenuStateChanged();
+}
+
+bool MainComponent::exportMastering()
+{
+    if (mastering == nullptr)
+        return false;
+
+    mastering->showExport();
+    return true;
 }
 
 } // namespace elsewhere

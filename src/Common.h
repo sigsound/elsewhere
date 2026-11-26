@@ -301,6 +301,7 @@ struct AppActions
 {
     virtual ~AppActions() = default;
     virtual void newProject() = 0;
+    virtual void newMasteringProject() = 0;
     virtual void openProject() = 0;
     virtual void openProject (const juce::File&) = 0;
     virtual void saveProject() = 0;

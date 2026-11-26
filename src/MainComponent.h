@@ -27,6 +27,8 @@
 
 namespace elsewhere
 {
+class MasteringView;
+
 //==============================================================================
 enum CommandIDs
 {
@@ -99,7 +101,10 @@ enum CommandIDs
     cmdListenReference,
     cmdChooseReference,
     cmdCaptureMidi,
-    cmdExportSeveral
+    cmdExportSeveral,
+    cmdNewMasteringProject,
+    cmdAddSong,
+    cmdBackToAlbum
 };
 
 //==============================================================================
@@ -186,6 +191,12 @@ public:
     /** Ticks and names in the menu bar may have changed. */
     std::function<void()> onMenuStateChanged;
 
+    /** A mastering project (see Mastering.h) shows its album in place of the arrangement. */
+    bool isMastering() const        { return mastering != nullptr; }
+
+    /** Exports the album, if this is a mastering project; false if it isn't. */
+    bool exportMastering();
+
 private:
     te::Engine& engine;
     AppActions& appActions;
@@ -201,6 +212,7 @@ private:
     std::unique_ptr<TrackList> trackList;
     std::unique_ptr<ClipList> clipList;
     std::unique_ptr<DetailView> detail;
+    std::unique_ptr<MasteringView> mastering;
     std::unique_ptr<Collab::Session> collab;
     std::unique_ptr<Live::Session> live;
     std::unique_ptr<SomewhereLink> somewhereLink;   // Somewhere (iPhone) on the same Wi-Fi

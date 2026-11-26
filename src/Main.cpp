@@ -14,6 +14,7 @@
 #include "MasteringTests.h"
 #include "Export.h"
 #include "ExportBatch.h"
+#include "Mastering.h"
 #include "PluginWindow.h"
 #include "Mixing.h"
 #include "PluginScanner.h"
@@ -72,7 +73,7 @@ public:
                 || args.contains ("--dawproject-test") || args.contains ("--aaf-test") || args.contains ("--import-test")
                 || args.contains ("--ableton-test") || args.contains ("--cubase-test") || args.contains ("--perf-test") || args.contains ("--record-test")
                 || args.contains ("--project-audio-test") || args.contains ("--takes-test") || args.contains ("--midi-lanes-test") || args.contains ("--routing-test") || args.contains ("--surfaces-test") || args.contains ("--export-test")
-                || args.contains ("--accessibility-test");
+                || args.contains ("--mastering-test") || args.contains ("--accessibility-test");
     }
 
     void initialise (const juce::String& commandLine) override
@@ -99,7 +100,7 @@ public:
                      || commandLine.contains ("--import-test") || commandLine.contains ("--ableton-test")
                      || commandLine.contains ("--cubase-test") || commandLine.contains ("--project-audio-test")
                      || commandLine.contains ("--takes-test") || commandLine.contains ("--midi-lanes-test") || commandLine.contains ("--routing-test") || commandLine.contains ("--surfaces-test") || commandLine.contains ("--export-test")
-                     || commandLine.contains ("--accessibility-test");   // a normal window for Somewhere tests: use with --open <copy>
+                     || commandLine.contains ("--mastering-test") || commandLine.contains ("--accessibility-test");   // a normal window for Somewhere tests: use with --open <copy>
 
         // Dev aid: --perf-test <project.elsewhere> <outDir> [buffer] [seconds] times audio callbacks
         // on its own engine (no audio device) and quits
@@ -634,6 +635,28 @@ public:
         });
     }
 
+    /** A project for mastering the songs of an album together (see Mastering.h). */
+    void newMasteringProject() override
+    {
+        confirmDiscardChanges ([this]
+        {
+            Project::getDefaultProjectsFolder().createDirectory();
+            chooser = std::make_unique<juce::FileChooser> ("Name your album", Project::getDefaultProjectsFolder().getChildFile ("New Album"), "");
+            chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles,
+                                  [this] (const juce::FileChooser& fc)
+            {
+                auto f = fc.getResult();
+
+                if (f == juce::File())
+                    return;
+
+                auto editFile = Mastering::createProject (*engine, f.getParentDirectory(), f.getFileNameWithoutExtension());
+                loadProject (editFile);
+                addRecentProject (editFile);
+            });
+        });
+    }
+
     void openProject() override
     {
         confirmDiscardChanges ([this]
@@ -740,6 +763,9 @@ public:
     void exportAudio() override
     {
         if (mainComponent == nullptr)
+            return;
+
+        if (mainComponent->exportMastering())
             return;
 
         auto& project = mainComponent->getProject();
@@ -2696,6 +2722,7 @@ private:
         if (index == 0)
         {
             m.addCommandItem (cm, cmdNewProject);
+            m.addCommandItem (cm, cmdNewMasteringProject);
 
             juce::PopupMenu templates;
             auto templateFiles = Library::getTemplates();
@@ -2713,11 +2740,18 @@ private:
             list.createPopupMenuItems (recent, 5000, true, true);
             m.addSubMenu ("Open Recent", recent);
 
+            // A song opened from an album
+            if (mainComponent != nullptr && Mastering::getReturn (engine->getPropertyStorage().getPropertiesFile(),
+                                                                  mainComponent->getProject().getEditFile()).existsAsFile())
+                m.addCommandItem (cm, cmdBackToAlbum);
+
             m.addSeparator();
             m.addCommandItem (cm, cmdSave);
             m.addCommandItem (cm, cmdSaveAs);
             m.addSeparator();
             m.addCommandItem (cm, cmdImportAudio);
+            if (mainComponent != nullptr && mainComponent->isMastering())
+                m.addCommandItem (cm, cmdAddSong);
             m.addCommandItem (cm, cmdExport);
             m.addCommandItem (cm, cmdExportSeveral);
             m.addSeparator();

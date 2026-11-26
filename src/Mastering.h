@@ -657,6 +657,27 @@ namespace Mastering
     }
 
     //==============================================================================
+    // Opening a song from the album, and coming back to it
+
+    /** Remembers that a song was opened from an album, so it can go back. */
+    inline void setReturn (juce::PropertiesFile& props, const juce::File& albumFile, const juce::File& song)
+    {
+        props.setValue ("masteringReturnAlbum", albumFile.getFullPathName());
+        props.setValue ("masteringReturnSong", song.getFullPathName());
+    }
+
+    /** The album a project was opened from, if it was (and the album is still there). */
+    inline juce::File getReturn (juce::PropertiesFile& props, const juce::File& project)
+    {
+        auto album = juce::File::createFileWithoutCheckingPath (props.getValue ("masteringReturnAlbum"));
+
+        if (props.getValue ("masteringReturnSong") != project.getFullPathName() || ! album.existsAsFile())
+            return {};
+
+        return album;
+    }
+
+    //==============================================================================
     /** Makes a new mastering project, saved and ready to open. */
     inline juce::File createProject (te::Engine& engine, const juce::File& parentDir, const juce::String& name)
     {
@@ -1037,6 +1058,8 @@ namespace Mastering
                         }
                         else
                         {
+                            // Its own step, so undoing what you did last doesn't take it back
+                            edit.getUndoManager().beginNewTransaction ("Update " + songNameOf (*t));
                             applyRender (*t, file, version, m.seconds);
                             t->state.setProperty (mixLufsId, m.lufs, nullptr);
                         }
