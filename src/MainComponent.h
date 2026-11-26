@@ -22,6 +22,7 @@
 #include "Takes.h"
 #include "ControlSurfaces.h"
 #include "drums/DrumTrack.h"
+#include "devices/ReferenceDevice.h"
 
 namespace elsewhere
 {
@@ -93,7 +94,9 @@ enum CommandIDs
     cmdSoloTrack,
     cmdArmTrack,
     cmdNextArea,
-    cmdPrevArea
+    cmdPrevArea,
+    cmdListenReference,
+    cmdChooseReference
 };
 
 //==============================================================================
@@ -138,6 +141,8 @@ public:
 
     void showShareDialog();
     void showVersionHistory();
+    ReferenceDevice* findReference() const;
+    void chooseReference();
     void showNameDialog();
 
     /** Closes any open file chooser (used by the dev self-checks). */
@@ -251,7 +256,7 @@ private:
     void timerCallback() override;
 
     te::SafeSelectable<te::Track> lastMidiTarget;
-    std::unique_ptr<juce::FileChooser> chooser;
+    std::unique_ptr<juce::FileChooser> chooser, referenceChooser;
     void createTracksForImportedFiles (const juce::Array<juce::File>& originals, const juce::Array<juce::File>& local, te::TimePosition start);
 };
 

@@ -954,6 +954,60 @@ void MainComponent::showVersionHistory()
     launchDialog ("Version History", new HistoryDialog (*project, appActions));
 }
 
+//==============================================================================
+ReferenceDevice* MainComponent::findReference() const
+{
+    for (auto* p : project->getEdit().getMasterPluginList().getPlugins())
+        if (auto* ref = dynamic_cast<ReferenceDevice*> (p))
+            return ref;
+
+    return nullptr;
+}
+
+void MainComponent::chooseReference()
+{
+    referenceChooser = std::make_unique<juce::FileChooser> ("Choose a song to compare with",
+                                                            findReference() != nullptr ? findReference()->getFile() : juce::File(),
+                                                            "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.ogg");
+    referenceChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                                   [this] (const juce::FileChooser& fc)
+    {
+        auto file = fc.getResult();
+
+        if (file == juce::File())
+            return;
+
+        auto& edit = project->getEdit();
+        edit.getUndoManager().beginNewTransaction ("Compare with Reference");
+        auto* ref = findReference();
+
+        // At the end of the master track, after its devices, so the reference skips them (the
+        // meter stays last, so it shows what you hear)
+        if (ref == nullptr)
+        {
+            auto& list = edit.getMasterPluginList();
+            int index = list.size();
+
+            for (int i = 0; i < list.size(); ++i)
+                if (dynamic_cast<te::LevelMeterPlugin*> (list[i]) != nullptr)
+                {
+                    index = i;
+                    break;
+                }
+
+            auto p = DeviceRegistry::create (edit, ReferenceDevice::xmlTypeName);
+            list.insertPlugin (p, index, nullptr);
+            ref = dynamic_cast<ReferenceDevice*> (p.get());
+        }
+
+        if (ref != nullptr)
+        {
+            ref->setFile (file);
+            ref->setListeningToReference (true);
+        }
+    });
+}
+
 void MainComponent::showNameDialog()
 {
     auto* aw = Theme::newAlertWindow ("Your Name", "Shown to collaborators and on your comments.");
@@ -1309,7 +1363,8 @@ void MainComponent::getAllCommands (juce::Array<juce::CommandID>& commands)
                          cmdShowClipList, cmdShowMarkers, cmdAddMarker, cmdPrevMarker, cmdNextMarker,
                          cmdPrevTransient, cmdNextTransient,
                          cmdEditShuffle, cmdEditSlip, cmdEditSpot, cmdEditGrid,
-                         cmdSelectPrevTrack, cmdSelectNextTrack, cmdMuteTrack, cmdSoloTrack, cmdArmTrack, cmdNextArea, cmdPrevArea });
+                         cmdSelectPrevTrack, cmdSelectNextTrack, cmdMuteTrack, cmdSoloTrack, cmdArmTrack, cmdNextArea, cmdPrevArea,
+                         cmdListenReference, cmdChooseReference });
 
     for (int i = cmdGoToMarker1; i <= cmdGoToMarkerLast; ++i)
         commands.add (i);
@@ -1478,6 +1533,16 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
         case cmdExportDawProject: info.setInfo ("Export DAWproject...", "Save the arrangement as a .dawproject file for Bitwig, Studio One or Cubase", "File", 0); break;
         case cmdShareProject:   info.setInfo ("Share Project...", "Work on this project with someone else via Dropbox", "File", 0); break;
         case cmdVersionHistory: info.setInfo ("Version History...", "Open an earlier saved version as a copy", "File", 0); break;
+        case cmdListenReference:
+        {
+            auto* ref = findReference();
+            info.setInfo ("Listen to Reference", "Switch between your mix and the reference song", "Transport", 0);
+            info.setActive (ref != nullptr);
+            info.setTicked (ref != nullptr && ref->isListeningToReference());
+            info.addDefaultKeypress ('r', 0);
+            break;
+        }
+        case cmdChooseReference: info.setInfo ("Compare with Reference...", "Choose a finished song to compare your mix with, at matched loudness", "Transport", 0); break;
         case cmdGoLive:
             info.setInfo ("Go Live", "Play together over the internet", "Transport", 0);
             info.setTicked (live != nullptr && live->isActive());
@@ -1615,6 +1680,14 @@ bool MainComponent::perform (const InvocationInfo& info)
         case cmdExportDawProject: appActions.exportDawProject(); break;
         case cmdShareProject:   showShareDialog(); break;
         case cmdVersionHistory: showVersionHistory(); break;
+        case cmdListenReference:
+            if (auto* ref = findReference())
+            {
+                ref->setListeningToReference (! ref->isListeningToReference());
+                A11y::announce (ref->isListeningToReference() ? "Reference" : "Mix");
+            }
+            break;
+        case cmdChooseReference: chooseReference(); break;
         case cmdSetName:        showNameDialog(); break;
         case cmdSelectPrevTrack: selectTrackFromKeyboard (-1); break;
         case cmdSelectNextTrack: selectTrackFromKeyboard (1); break;

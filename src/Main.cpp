@@ -2763,6 +2763,9 @@ private:
             m.addCommandItem (cm, cmdPrevTransient);
             m.addCommandItem (cm, cmdNextTransient);
             m.addSeparator();
+            m.addCommandItem (cm, cmdChooseReference);
+            m.addCommandItem (cm, cmdListenReference);
+            m.addSeparator();
             m.addCommandItem (cm, cmdGoLive);
         }
         else if (index == 4)

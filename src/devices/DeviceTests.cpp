@@ -15,6 +15,7 @@
 #include "MidiEffects.h"
 #include "StepsDevice.h"
 #include "EchoDevice.h"
+#include "ReferenceDevice.h"
 #include "../Modulators.h"
 #include "../SessionRecorder.h"
 #include "../drums/DrumTrack.h"
@@ -2803,6 +2804,57 @@ int run (te::Engine& engine, const juce::File& outDir)
     }
 
     //==============================================================================
+    r.log << "Reference\n";
+    {
+        // A quiet song (-26 dB sine) and a mix 20 dB louder
+        auto song = outDir.getChildFile ("reference-song.wav");
+        writeWav (song, sine (1000.0, 0.05f, 8.0));
+        auto& ref = make<ReferenceDevice> (*edit, ReferenceDevice::xmlTypeName);
+        ref.setFile (song);
+
+        for (int i = 0; i < 500 && ref.getStatus() != ReferenceDevice::Status::ready; ++i)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        check (r, ref.getStatus() == ReferenceDevice::Status::ready, "loads the song");
+
+        // Played, not rendered: the context an export uses keeps the mix
+        auto play = [&] (juce::AudioBuffer<float>& buf, double from, bool rendering)
+        {
+            for (int start = 0; start < buf.getNumSamples(); start += block)
+            {
+                auto n = juce::jmin (block, buf.getNumSamples() - start);
+                te::MidiMessageArray mma;
+                te::PluginRenderContext rc (&buf, start, n, &mma, 0.0,
+                                            te::TimeRange (te::TimePosition::fromSeconds (from + start / sr), te::TimePosition::fromSeconds (from + (start + n) / sr)),
+                                            true, false, rendering, false);
+                ref.applyToBuffer (rc);
+            }
+        };
+
+        auto mix = sine (1000.0, 0.5f, 4.0);
+        play (mix, 0.0, false);
+        check (r, std::abs (tailRmsDb (mix) - tailRmsDb (sine (1000.0, 0.5f, 4.0))) < 0.01f, "listening to the mix leaves it alone");
+        check (r, std::abs (ref.getMixLufs() - ref.getReferenceLufs() - 20.0) < 0.5,
+               "measures the mix 20 dB louder than the song (" + juce::String (ref.getMixLufs() - ref.getReferenceLufs(), 2) + " LU)");
+
+        setParam (ref.listen, 1.0f);
+        auto heard = sine (1000.0, 0.5f, 2.0);
+        play (heard, 4.0, false);
+        auto matched = tailRmsDb (heard) - tailRmsDb (sine (1000.0, 0.5f, 2.0));
+        check (r, std::abs (matched) < 0.5f, "the song plays in its place, matched to the mix (" + juce::String (matched, 2) + " dB)");
+
+        setParam (ref.match, 0.0f);
+        auto plain = sine (1000.0, 0.5f, 2.0);
+        play (plain, 4.0, false);
+        auto unmatched = tailRmsDb (plain) - tailRmsDb (sine (1000.0, 0.5f, 2.0));
+        check (r, std::abs (unmatched + 20.0f) < 0.5f, "with Match off it plays at its own level (" + juce::String (unmatched, 2) + " dB)");
+
+        auto exported = sine (1000.0, 0.5f, 2.0);
+        play (exported, 4.0, true);
+        check (r, std::abs (tailRmsDb (exported) - tailRmsDb (sine (1000.0, 0.5f, 2.0))) < 0.01f, "exports always render the mix");
+        snapshot (ref, outDir.getChildFile ("reference.png"));
+    }
+
     r.log << "Tape Echo\n";
     {
         auto& ec = make<EchoDevice> (*edit, EchoDevice::xmlTypeName);
