@@ -3,6 +3,7 @@
 
 #include "ExportTests.h"
 #include "Export.h"
+#include "ExportBatch.h"
 #include "Normalise.h"
 #include "Project.h"
 
@@ -429,6 +430,65 @@ int run (te::Engine& engine, const juce::File& outDir)
         log.check (vol != nullptr && std::abs (loud - dry - 6.0f) < 0.5f, "a +6 dB device plays 6 dB louder (" + juce::String (loud - dry, 2) + " dB)");
         log.check (std::abs (matched - dry) < 0.5f, "with Match Level on, it plays at its input's level (" + juce::String (matched - dry, 2) + " dB)");
         log.check (std::abs (boost->getGainMatchDb() + 6.0f) < 0.5f, "and reports the gain it applied (" + juce::String (boost->getGainMatchDb(), 2) + " dB)");
+    }
+
+    // Export Several Projects: two saved projects (one of them unreadable) and one open with an unsaved change
+    {
+        juce::Array<juce::File> projects;
+        std::unique_ptr<Project> openProject;
+
+        for (auto name : { "Batch One", "Batch Two", "Batch Open" })
+        {
+            auto f = Project::createProjectFolder (outDir, name);
+            auto smp = f.getParentDirectory().getChildFile ("Samples/Imported");
+            writeSine (smp.getChildFile ("tone.wav"), 1.0, 0.03f, 0.2f);
+            auto bp = std::make_unique<Project> (engine, f);
+            bp->getEdit().ensureNumberOfAudioTracks (1);
+            te::getAudioTracks (bp->getEdit())[0]->insertWaveClip ("tone", smp.getChildFile ("tone.wav"), secs (0, 1), false);
+
+            if (juce::String (name) == "Batch Open")
+            {
+                te::getAudioTracks (bp->getEdit())[0]->insertWaveClip ("tone", smp.getChildFile ("tone.wav"), secs (1, 2), false);   // not saved
+                openProject = std::move (bp);
+            }
+            else
+            {
+                bp->save (false);
+            }
+
+            projects.add (f);
+        }
+
+        auto damaged = Project::createProjectFolder (outDir, "Batch Damaged");
+        damaged.replaceWithText ("not a project");
+        projects.add (damaged);
+
+        Export::Settings bs;
+        bs.tails = false;
+        bs.format = te::RenderFormat::wav;
+        bs.bitDepth = 24;
+        bs.sampleRate = 48000.0;
+        bs.reserveRights = false;
+        bs.range = Export::Range::loop;     // the batch always does the whole song
+
+        ExportBatch::Runner runner (engine, projects, bs, &openProject->getEdit());
+        runner.start();
+        auto deadline = juce::Time::getMillisecondCounter() + 60000;
+
+        while (! runner.isFinished() && juce::Time::getMillisecondCounter() < deadline)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        auto lengthOf = [] (const juce::File& f) { auto r = open (f); return r != nullptr ? (double) r->lengthInSamples / r->sampleRate : 0.0; };
+        auto one = projects[0].getParentDirectory().getChildFile ("Exports/Batch One.wav");
+        auto two = projects[1].getParentDirectory().getChildFile ("Exports/Batch Two.wav");
+        auto opened = projects[2].getParentDirectory().getChildFile ("Exports/Batch Open.wav");
+
+        log.check (runner.isFinished(), "Export Several Projects finishes");
+        log.check (one.existsAsFile() && two.existsAsFile(), "each saved project is exported into its own Exports folder");
+        log.check (std::abs (lengthOf (one) - 1.0) < 0.05, "the whole song, whatever range was last chosen (" + juce::String (lengthOf (one), 2) + " s)");
+        log.check (std::abs (lengthOf (opened) - 2.0) < 0.05, "the open project is exported as it is on screen (" + juce::String (lengthOf (opened), 2) + " s)");
+        log.check (runner.numExported == 3 && runner.failures.size() == 1 && runner.failures[0] == "Batch Damaged: couldn't be opened",
+                   "a project that can't be opened is reported, and the rest still export: " + runner.failures.joinIntoString ("; "));
     }
 
     std::cout << "Export tests\n" << log.text << (log.failures == 0 ? "All passed\n" : juce::String (log.failures) + " failed\n");

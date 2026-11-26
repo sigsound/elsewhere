@@ -98,7 +98,8 @@ enum CommandIDs
     cmdPrevArea,
     cmdListenReference,
     cmdChooseReference,
-    cmdCaptureMidi
+    cmdCaptureMidi,
+    cmdExportSeveral
 };
 
 //==============================================================================

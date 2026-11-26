@@ -88,25 +88,8 @@ public:
             edit = te::createEmptyEdit (engine, editFile);
         }
 
-        edit->alwaysUseRelativePaths = true;
+        usePathsBeside (*edit, editFile);
         edit->playInStopEnabled = true;
-        edit->editFileRetriever = [f = editFile] { return f; };
-        edit->filePathResolver = [f = editFile] (const juce::String& path) -> juce::File
-        {
-            if (juce::File::isAbsolutePath (path))
-                return juce::File (path);
-
-            // The engine writes paths relative to the edit file via File::getRelativePathFrom,
-            // which gives "Samples/x.wav" if the edit file exists on disk but "../Samples/x.wav"
-            // if it doesn't yet. Accept both forms.
-            auto fromFolder = f.getParentDirectory().getChildFile (path);
-
-            if (fromFolder.exists())
-                return fromFolder;
-
-            auto fromFile = f.getChildFile (path);
-            return fromFile.exists() ? fromFile : fromFolder;
-        };
 
         // Master bus gets a meter so the UI can show output levels
         edit->ensureMasterTrack();
@@ -346,6 +329,49 @@ public:
         }
 
         return best;
+    }
+
+    /** Points the edit's relative audio paths at the project folder `file` is in. */
+    static void usePathsBeside (te::Edit& edit, const juce::File& file)
+    {
+        edit.alwaysUseRelativePaths = true;
+        edit.editFileRetriever = [f = file] { return f; };
+        edit.filePathResolver = [f = file] (const juce::String& path) -> juce::File
+        {
+            if (juce::File::isAbsolutePath (path))
+                return juce::File (path);
+
+            // The engine writes paths relative to the edit file via File::getRelativePathFrom,
+            // which gives "Samples/x.wav" if the edit file exists on disk but "../Samples/x.wav"
+            // if it doesn't yet. Accept both forms.
+            auto fromFolder = f.getParentDirectory().getChildFile (path);
+
+            if (fromFolder.exists())
+                return fromFolder;
+
+            auto fromFile = f.getChildFile (path);
+            return fromFile.exists() ? fromFile : fromFolder;
+        };
+    }
+
+    /** Opens a project's saved arrangement on its own, to render it: no lock, no backups,
+        nothing written. Null if it can't be read. */
+    static std::unique_ptr<te::Edit> openForRendering (te::Engine& engine, const juce::File& file)
+    {
+        auto source = chooseFileToLoad (file);
+
+        if (! isReadable (source))
+            return {};
+
+        auto edit = loadEdit (engine, source);
+
+        if (edit != nullptr)
+        {
+            usePathsBeside (*edit, file);
+            edit->ensureMasterTrack();
+        }
+
+        return edit;
     }
 
     /** Loads an edit file, translating names saved before the rename (see LegacyNames.h). */

@@ -306,6 +306,7 @@ struct AppActions
     virtual void saveProject() = 0;
     virtual void saveProjectAs() = 0;
     virtual void exportAudio() = 0;
+    virtual void exportSeveralProjects() = 0;
     virtual void importSession() = 0;
     virtual void exportDawProject() = 0;
     virtual void showAudioSettings() = 0;

@@ -12,6 +12,7 @@
 #include "MidiLanes.h"
 #include "ExportTests.h"
 #include "Export.h"
+#include "ExportBatch.h"
 #include "PluginWindow.h"
 #include "Mixing.h"
 #include "PluginScanner.h"
@@ -734,6 +735,28 @@ public:
 
         auto& project = mainComponent->getProject();
         Export::showDialog (project.getEdit(), project.getFolder(), project.getName());
+    }
+
+    void exportSeveralProjects() override
+    {
+        if (mainComponent == nullptr)
+            return;
+
+        auto start = mainComponent->getProject().getFolder().getParentDirectory();
+        chooser = std::make_unique<juce::FileChooser> ("Choose the projects to export", start, juce::String ("*") + Project::fileExtension);
+        chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
+                                | juce::FileBrowserComponent::canSelectMultipleItems,
+                              [this] (const juce::FileChooser& fc)
+        {
+            juce::Array<juce::File> projects;
+
+            for (auto& f : fc.getResults())
+                if (f.existsAsFile())
+                    projects.add (f);
+
+            if (mainComponent != nullptr && ! projects.isEmpty())
+                ExportBatch::run (*engine, projects, &mainComponent->getProject().getEdit());
+        });
     }
 
     //==============================================================================
@@ -2687,6 +2710,7 @@ private:
             m.addSeparator();
             m.addCommandItem (cm, cmdImportAudio);
             m.addCommandItem (cm, cmdExport);
+            m.addCommandItem (cm, cmdExportSeveral);
             m.addSeparator();
             m.addCommandItem (cm, cmdImportSession);
             m.addCommandItem (cm, cmdExportDawProject);

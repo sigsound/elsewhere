@@ -1364,7 +1364,7 @@ void MainComponent::getAllCommands (juce::Array<juce::CommandID>& commands)
                          cmdPrevTransient, cmdNextTransient,
                          cmdEditShuffle, cmdEditSlip, cmdEditSpot, cmdEditGrid,
                          cmdSelectPrevTrack, cmdSelectNextTrack, cmdMuteTrack, cmdSoloTrack, cmdArmTrack, cmdNextArea, cmdPrevArea,
-                         cmdListenReference, cmdChooseReference, cmdCaptureMidi });
+                         cmdListenReference, cmdChooseReference, cmdCaptureMidi, cmdExportSeveral });
 
     for (int i = cmdGoToMarker1; i <= cmdGoToMarkerLast; ++i)
         commands.add (i);
@@ -1394,6 +1394,7 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
         case cmdSave:           info.setInfo ("Save", "Save the project", "File", 0); info.addDefaultKeypress ('s', cmd); break;
         case cmdSaveAs:         info.setInfo ("Save As...", "Save a copy of the project", "File", 0); info.addDefaultKeypress ('s', cmd | shift); break;
         case cmdExport:         info.setInfo ("Export Audio...", "Render the arrangement to a WAV file", "File", 0); info.addDefaultKeypress ('r', cmd | shift); break;
+        case cmdExportSeveral:  info.setInfo ("Export Several Projects...", "Export each of several projects with the same settings", "File", 0); break;
         case cmdUndo:
             info.setInfo ("Undo " + edit.getUndoManager().getUndoDescription(), "Undo", "Edit", 0);
             info.setActive (edit.getUndoManager().canUndo());
@@ -1627,6 +1628,7 @@ bool MainComponent::perform (const InvocationInfo& info)
         case cmdSave:           appActions.saveProject(); break;
         case cmdSaveAs:         appActions.saveProjectAs(); break;
         case cmdExport:         appActions.exportAudio(); break;
+        case cmdExportSeveral:  appActions.exportSeveralProjects(); break;
         case cmdUndo:           edit.getUndoManager().undo(); break;
         case cmdRedo:           edit.getUndoManager().redo(); break;
         case cmdDelete:         deleteSelected(); break;
