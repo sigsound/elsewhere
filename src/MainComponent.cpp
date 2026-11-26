@@ -830,24 +830,33 @@ namespace
     {
         HistoryDialog (Project& p, AppActions& a) : project (p), actions (a)
         {
-            files = project.getFolder().getChildFile ("Backups").findChildFiles (juce::File::findFiles, false,
-                                                                                  "*" + project.getEditFile().getFileExtension());
-            files.sort();
-            std::reverse (files.begin(), files.end());
-
-            for (auto f : files)
-            {
-                auto xml = juce::XmlDocument::parse (f);
-                savedBy.add (xml != nullptr ? Legacy::getAttribute (*xml, "elsewhereSavedBy") : juce::String());
-            }
+            for (auto& c : History::read (project.getEditFile()))
+                if (c.kind != History::Kind::damaged)
+                    checkpoints.insert (0, c);     // newest first
 
             list.setModel (this);
             list.setRowHeight (26);
             addAndMakeVisible (list);
 
+            empty.setText ("Every time you save, the version you saved is kept here.", juce::dontSendNotification);
+            empty.setJustificationType (juce::Justification::centred);
+            empty.setColour (juce::Label::textColourId, Colours::textDim);
+            addChildComponent (empty);
+            empty.setVisible (checkpoints.isEmpty());
+
+            // A shared project is put back together from everyone's changes, so it isn't wound back here
+            shared = Project::isSharedProjectFile (project.getEditFile());
             openButton.onClick = [this] { openSelected(); };
+            backButton.onClick = [this] { goBackToSelected(); };
             addAndMakeVisible (openButton);
-            setSize (520, 420);
+
+            if (! shared)
+                addAndMakeVisible (backButton);
+
+            if (! checkpoints.isEmpty())
+                list.selectRow (0);
+
+            setSize (560, 420);
         }
 
         void paint (juce::Graphics& g) override { g.fillAll (Colours::panel); }
@@ -856,64 +865,161 @@ namespace
         {
             auto r = getLocalBounds().reduced (12);
             auto bottom = r.removeFromBottom (30);
-            openButton.setBounds (bottom.removeFromRight (180));
+            openButton.setBounds (bottom.removeFromRight (150));
+            bottom.removeFromRight (8);
+            backButton.setBounds (bottom.removeFromRight (190));
             r.removeFromBottom (8);
             list.setBounds (r);
+            empty.setBounds (r);
         }
 
-        int getNumRows() override { return files.size(); }
+        int getNumRows() override { return checkpoints.size(); }
+
+        static juce::String describeTime (juce::Time t)
+        {
+            auto now = juce::Time::getCurrentTime();
+            auto sameDay = [] (juce::Time a, juce::Time b) { return a.getYear() == b.getYear() && a.getDayOfYear() == b.getDayOfYear(); };
+            auto clock = t.formatted ("%H:%M");
+
+            if (sameDay (t, now))
+                return "Today " + clock;
+
+            if (sameDay (t, now - juce::RelativeTime::days (1)))
+                return "Yesterday " + clock;
+
+            return t.formatted (t.getYear() == now.getYear() ? "%e %b" : "%e %b %Y").trim() + ", " + clock;
+        }
 
         void paintListBoxItem (int row, juce::Graphics& g, int w, int h, bool selected) override
         {
             if (selected)
                 g.fillAll (Colours::accent.withAlpha (0.3f));
 
-            auto stamp = files[row].getFileNameWithoutExtension().fromLastOccurrenceOf (project.getName() + " ", false, false);
+            auto& c = checkpoints.getReference (row);
+            auto what = describeTime (c.time);
+
+            if (row == 0 && c.kind == History::Kind::saved)
+                what << "  (as it is now)";
+
             g.setColour (Colours::text);
             g.setFont (juce::FontOptions (13.0f));
-            g.drawText (stamp, 8, 0, w / 2, h, juce::Justification::centredLeft);
+            g.drawText (what, 8, 0, w / 2, h, juce::Justification::centredLeft);
+
+            juce::String note = c.label.isNotEmpty() ? c.label
+                              : c.kind == History::Kind::unsaved ? juce::String ("unsaved changes, set aside")
+                              : c.savedBy.isNotEmpty() ? "saved by " + c.savedBy : juce::String();
             g.setColour (Colours::textDim);
-            g.drawText (savedBy[row].isNotEmpty() ? "saved by " + savedBy[row] : juce::String(), w / 2, 0, w / 2 - 8, h, juce::Justification::centredRight);
+            g.drawText (note, w / 2, 0, w / 2 - 8, h, juce::Justification::centredRight);
         }
 
         void listBoxItemDoubleClicked (int, const juce::MouseEvent&) override { openSelected(); }
 
+        const History::Checkpoint* getSelected() const
+        {
+            auto row = list.getSelectedRow();
+            return juce::isPositiveAndBelow (row, checkpoints.size()) ? &checkpoints.getReference (row) : nullptr;
+        }
+
+        std::unique_ptr<juce::XmlElement> loadSelected()
+        {
+            auto* c = getSelected();
+
+            if (c == nullptr)
+                return {};
+
+            auto content = History::load (*c);
+            auto xml = content.isEmpty() ? nullptr : juce::parseXML (content.toString());
+
+            if (xml == nullptr || ! xml->hasTagName ("EDIT"))
+            {
+                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "This version can't be read",
+                                                        "Its copy in the project's history is damaged. Try the one before it.");
+                return {};
+            }
+
+            return xml;
+        }
+
+        void close()
+        {
+            if (auto dw = findParentComponentOfClass<juce::DialogWindow>())
+                dw->exitModalState (0);
+        }
+
         /** Opens the old version as a separate copy, so nothing current is overwritten. */
         void openSelected()
         {
-            auto row = list.getSelectedRow();
+            auto xml = loadSelected();
 
-            if (row < 0)
+            if (xml == nullptr)
                 return;
 
-            auto source = files[row];
-            auto stamp = source.getFileNameWithoutExtension().fromLastOccurrenceOf (project.getName() + " ", false, false);
+            auto stamp = getSelected()->time.formatted ("%Y-%m-%d %H-%M");
             auto newEdit = Project::createProjectFolder (project.getFolder().getParentDirectory(), project.getName() + " (" + stamp + ")");
             auto newFolder = newEdit.getParentDirectory();
 
-            for (auto sub : { "Samples/Imported", "Samples/Recorded", "Samples/Bounced" })
+            for (auto sub : { "Samples/Imported", "Samples/Recorded", "Samples/Bounced", "Samples/Somewhere" })
                 project.getFolder().getChildFile (sub).copyDirectoryTo (newFolder.getChildFile (sub));
 
             // The copy is a separate, unshared project
-            if (auto xml = juce::XmlDocument::parse (source))
-            {
-                for (auto name : { "elsewhereCollab", "elsewhereCollabClock", "tandemCollab", "tandemCollabClock" })
-                    xml->removeAttribute (name);
-                xml->writeTo (newEdit);
-            }
+            for (auto name : { "elsewhereCollab", "elsewhereCollabClock", "tandemCollab", "tandemCollabClock" })
+                xml->removeAttribute (name);
 
-            if (auto dw = findParentComponentOfClass<juce::DialogWindow>())
-                dw->exitModalState (0);
-
+            xml->writeTo (newEdit);
+            close();
             juce::MessageManager::callAsync ([a = &actions, newEdit] { a->openProject (newEdit); });
+        }
+
+        /** Makes the project what it was then. What it is now stays in the history, so this can be undone the same way. */
+        void goBackToSelected()
+        {
+            auto xml = loadSelected();
+
+            if (xml == nullptr)
+                return;
+
+            auto when = describeTime (getSelected()->time);
+            juce::Component::SafePointer<HistoryDialog> safe (this);
+            auto options = juce::MessageBoxOptions()
+                             .withIconType (juce::MessageBoxIconType::QuestionIcon)
+                             .withTitle ("Go back to " + when + "?")
+                             .withMessage ("The project becomes what it was then. What it is now stays in Version History, so you can come back to it.")
+                             .withButton ("Go Back")
+                             .withButton ("Cancel");
+
+            juce::AlertWindow::showAsync (options, [safe, x = std::shared_ptr<juce::XmlElement> (std::move (xml))] (int result)
+            {
+                if (result != 1 || safe == nullptr)
+                    return;
+
+                auto& p = safe->project;
+
+                // Saved first, so what's there now is in the history
+                if (! p.save())
+                    return;
+
+                auto file = p.getEditFile();
+                juce::TemporaryFile temp (file);
+
+                if (! x->writeTo (temp.getFile()) || ! temp.overwriteTargetFileWithTemporary())
+                {
+                    juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Couldn't go back", "The project file couldn't be written.");
+                    return;
+                }
+
+                auto* acts = &safe->actions;
+                safe->close();
+                juce::MessageManager::callAsync ([acts, file] { acts->openProject (file); });
+            });
         }
 
         Project& project;
         AppActions& actions;
-        juce::Array<juce::File> files;
-        juce::StringArray savedBy;
+        juce::Array<History::Checkpoint> checkpoints;
+        bool shared = false;
         juce::ListBox list;
-        juce::TextButton openButton { "Open This Version as a Copy" };
+        juce::Label empty;
+        juce::TextButton openButton { "Open as a Copy" }, backButton { "Go Back to This Version" };
     };
 
     void launchDialog (const juce::String& title, juce::Component* content)
@@ -1533,7 +1639,7 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
         case cmdImportSession: info.setInfo ("Import Session (Pro Tools, Ableton, Cubase, AAF, DAWproject)...", "Make an Elsewhere project from another DAW's session: a Pro Tools session, an Ableton Live Set, a Cubase project, AAF from Pro Tools or Logic, or DAWproject from Bitwig, Studio One or Cubase", "File", 0); break;
         case cmdExportDawProject: info.setInfo ("Export DAWproject...", "Save the arrangement as a .dawproject file for Bitwig, Studio One or Cubase", "File", 0); break;
         case cmdShareProject:   info.setInfo ("Share Project...", "Work on this project with someone else via Dropbox", "File", 0); break;
-        case cmdVersionHistory: info.setInfo ("Version History...", "Open an earlier saved version as a copy", "File", 0); break;
+        case cmdVersionHistory: info.setInfo ("Version History...", "Go back to an earlier saved version, or open one as a copy", "File", 0); break;
         case cmdListenReference:
         {
             auto* ref = findReference();

@@ -5,6 +5,7 @@
 
 #include "Common.h"
 #include "LegacyNames.h"
+#include "History.h"
 
 namespace elsewhere
 {
@@ -17,7 +18,7 @@ namespace elsewhere
             My Song.elsewhere          <- the arrangement (Tracktion Edit XML)
             Samples/Imported/       <- audio dragged in is copied here
             Samples/Recorded/       <- new recordings land here
-            Backups/                <- timestamped copies made on every save
+            .My Song.history        <- every saved version, compressed (Version History)
             .elsewhere-lock            <- who currently has the project open
 
     All audio references inside the .elsewhere file are relative, so the folder can be
@@ -52,7 +53,6 @@ public:
         folder.getChildFile ("Samples/Imported").createDirectory();
         folder.getChildFile ("Samples/Recorded").createDirectory();
         folder.getChildFile ("Samples/Somewhere").createDirectory();   // samples sent from Somewhere (iPhone)
-        folder.getChildFile ("Backups").createDirectory();
     }
 
     //==============================================================================
@@ -61,6 +61,7 @@ public:
     Project (te::Engine& e, const juce::File& file, bool recover = false) : engine (e), editFile (file)
     {
         createSubfolders (getFolder());
+        History::importBackups (editFile);     // projects from before the history file
 
         // Shared projects may have fresher (or intact) per-user snapshots than the main file
         auto source = chooseFileToLoad (editFile);
@@ -175,7 +176,7 @@ public:
     /** Opened as an empty project because the file couldn't be read: it won't save. */
     bool isUnreadable() const           { return unreadable; }
 
-    /** The answer was "open the last saved one": the unsaved changes go into Backups, where
+    /** The answer was "open the last saved one": the unsaved changes go into the history, where
         Version History finds them, and this session keeps its own recovery copy from now on. */
     void setRecoveryAside()
     {
@@ -183,12 +184,8 @@ public:
             return;
 
         auto f = getRecoveryFile (engine, editFile);
-        auto backups = getFolder().getChildFile ("Backups");
-        backups.createDirectory();
-        auto stamp = f.getLastModificationTime().formatted ("%Y-%m-%d %H-%M-%S");
-
-        if (! f.moveFileTo (backups.getNonexistentChildFile (getName() + " " + stamp + " unsaved", fileExtension, false)))
-            f.deleteFile();
+        History::addFile (editFile, f, History::Kind::unsaved, f.getLastModificationTime());
+        f.deleteFile();
 
         recoveryPending = false;
     }
@@ -214,34 +211,35 @@ public:
         return true;
     }
 
-    /** For a damaged project file: puts the newest backup that can be read in its place, keeping
-        the damaged file in Backups. Returns the backup used. */
-    static std::optional<juce::File> restoreLatestBackup (const juce::File& editFile)
+    /** For a damaged project file: puts the newest saved version that can be read in its place,
+        keeping the damaged file in the history. Returns when that version was saved. */
+    static std::optional<juce::Time> restoreLatestBackup (const juce::File& editFile)
     {
-        auto backups = editFile.getParentDirectory().getChildFile ("Backups");
-        auto files = backups.findChildFiles (juce::File::findFiles, false, "*" + editFile.getFileExtension());
-        std::sort (files.begin(), files.end(), [] (const juce::File& a, const juce::File& b)
-                   { return a.getLastModificationTime() > b.getLastModificationTime(); });
+        auto list = History::read (editFile);
 
-        for (auto& f : files)
+        for (int i = list.size(); --i >= 0;)
         {
             // Saved versions only: changes that were set aside unsaved stay in Version History
-            if (f.getFileNameWithoutExtension().endsWith (" unsaved") || ! isReadable (f))
+            auto& c = list.getReference (i);
+
+            if (c.kind != History::Kind::saved)
                 continue;
 
-            auto stamp = juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H-%M-%S");
-            auto aside = backups.getNonexistentChildFile (editFile.getFileNameWithoutExtension() + " " + stamp + " damaged", ".damaged", false);
+            auto content = History::load (c);
+            auto xml = content.isEmpty() ? nullptr : juce::parseXML (content.toString());
 
-            if (editFile.existsAsFile() && ! editFile.moveFileTo (aside))
+            if (xml == nullptr || ! xml->hasTagName ("EDIT"))
+                continue;
+
+            if (editFile.existsAsFile() && ! History::addFile (editFile, editFile, History::Kind::damaged))
                 return std::nullopt;
 
-            if (! f.copyFileTo (editFile))
-            {
-                aside.moveFileTo (editFile);
-                return std::nullopt;
-            }
+            juce::TemporaryFile temp (editFile);
 
-            return f;
+            if (! temp.getFile().replaceWithData (content.getData(), content.getSize()) || ! temp.overwriteTargetFileWithTemporary())
+                return std::nullopt;
+
+            return c.time;
         }
 
         return std::nullopt;
@@ -403,10 +401,10 @@ public:
         if (savedByName.isNotEmpty())
             edit->state.setProperty ("elsewhereSavedBy", savedByName, nullptr);
 
-        // Someone else's save (a synced folder), or one from before backups held the latest
+        // Someone else's save (a synced folder), or one from before the history held the latest
         // save: keep it before it's replaced
-        if (editFile.getLastModificationTime() != backedUpModTime && ! isInBackups())
-            makeBackup();
+        if (editFile.getLastModificationTime() != backedUpModTime && ! isInHistory())
+            addToHistory();
 
         // The answer comes back before save() returns, unless the engine is showing its own
         // failure message (which answers later, and then only "not saved" matters)
@@ -419,9 +417,9 @@ public:
 
         if (ok)
         {
-            // Backups always hold what was last saved, so a project file that gets damaged
+            // The history always holds what was last saved, so a project file that gets damaged
             // loses nothing
-            makeBackup();
+            addToHistory();
 
             if (! recoveryPending)
                 getRecoveryFile (engine, editFile).deleteFile();
@@ -572,7 +570,7 @@ private:
     std::unique_ptr<te::Edit> edit;
     juce::Time lastSaveTime;
     bool recoveryPending = false, openedFromRecovery = false, unreadable = false;
-    juce::Time backedUpModTime;     // the project file as it was when it last went into Backups
+    juce::Time backedUpModTime;     // the project file as it was when it last went into the history
 
     /** Notes that something in the project changed, so the recovery copy is only rewritten
         when there's something new to keep. */
@@ -594,45 +592,27 @@ private:
 
     std::unique_ptr<ChangeWatcher> changes;
 
-    /** True if a backup already holds exactly what's in the project file (as it does when the
-        last session's final save is being opened again). */
-    bool isInBackups() const
+    /** True if the history already holds exactly what's in the project file (as it does when
+        the last session's final save is being opened again). */
+    bool isInHistory() const
     {
-        auto size = editFile.getSize();
-        juce::String hash;
-
-        for (auto& f : getFolder().getChildFile ("Backups").findChildFiles (juce::File::findFiles, false, "*" + editFile.getFileExtension()))
-        {
-            if (f.getSize() != size)
-                continue;
-
-            if (hash.isEmpty())
-                hash = hashFileContents (editFile);
-
-            if (hashFileContents (f) == hash)
-                return true;
-        }
-
-        return false;
+        juce::MemoryBlock content;
+        return editFile.loadFileAsData (content) && History::contains (editFile, History::hashOf (content.getData(), content.getSize()));
     }
 
-    void makeBackup()
+    /** Adds what's in the project file to the history, as a saved version. */
+    void addToHistory()
     {
-        if (! editFile.existsAsFile())
+        juce::MemoryBlock content;
+
+        if (! editFile.loadFileAsData (content))
             return;
 
-        auto backups = getFolder().getChildFile ("Backups");
-        backups.createDirectory();
-        auto stamp = juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H-%M-%S");
-        editFile.copyFileTo (backups.getNonexistentChildFile (getName() + " " + stamp, editFile.getFileExtension(), false));
+        // Saving with nothing changed adds nothing
+        if (! History::isLatest (editFile, content))
+            History::add (editFile, content, History::Kind::saved);
+
         backedUpModTime = editFile.getLastModificationTime();
-
-        // Keep the 30 most recent backups
-        auto files = backups.findChildFiles (juce::File::findFiles, false, "*" + editFile.getFileExtension());
-        files.sort();
-
-        for (int i = 0; i < files.size() - 30; ++i)
-            files.getReference (i).deleteFile();
     }
 
     void writeLock()

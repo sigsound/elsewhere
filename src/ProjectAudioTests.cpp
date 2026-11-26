@@ -174,8 +174,8 @@ int run (te::Engine& engine, const juce::File& outDir)
 
             p.save();
             log.check (oldFile.existsAsFile() && ! newFile.existsAsFile(), "an old project keeps its .tandem file");
-            log.check (p.getFolder().getChildFile ("Backups").findChildFiles (juce::File::findFiles, false, "*.tandem").size() == 2,
-                       "its backups (as it was, and as saved) are .tandem too");
+            log.check (History::read (oldFile).size() >= 1 && History::fileFor (oldFile).getFileName() == "." + oldFile.getFileNameWithoutExtension() + ".history",
+                       "its versions are kept in the history beside it");
         }
 
         auto music = outDir.getChildFile ("Music");

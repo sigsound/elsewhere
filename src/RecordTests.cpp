@@ -778,7 +778,7 @@ int run (const juce::StringArray& args)
         auto file = rig.project->getEditFile();
         auto recovery = Project::getRecoveryFile (rig.engine, file);
         auto kept = recovery.getSiblingFile ("kept");
-        auto backups = rig.project->getFolder().getChildFile ("Backups");
+        auto kept_ = [&] (History::Kind k) { int n = 0; for (auto& c : History::read (file)) n += c.kind == k ? 1 : 0; return n; };
         auto trackName = [&] { return te::getAudioTracks (rig.edit())[0]->getName(); };
         auto change = [&] (const juce::String& name)
         {
@@ -828,9 +828,8 @@ int run (const juce::StringArray& args)
         rig.project->updateRecovery();
         crash();
         rig.project->setRecoveryAside();
-        log.check (! recovery.exists() && ! rig.project->hasRecoveryPending()
-                    && backups.findChildFiles (juce::File::findFiles, false, "* unsaved.elsewhere").size() == 1,
-                   "Open Last Saved puts them in Backups for Version History");
+        log.check (! recovery.exists() && ! rig.project->hasRecoveryPending() && kept_ (History::Kind::unsaved) == 1,
+                   "Open Last Saved puts them in the history for Version History");
 
         // A project file cut short, as a half-finished sync leaves it
         rig.project.reset();
@@ -844,10 +843,94 @@ int run (const juce::StringArray& args)
         }
 
         auto used = Project::restoreLatestBackup (file);
-        log.check (used.has_value() && Project::isReadable (file) && ! Project::isDamaged (file), "the latest backup opens in its place");
-        log.check (backups.findChildFiles (juce::File::findFiles, false, "*.damaged").size() == 1, "and the damaged file is kept");
+        log.check (used.has_value() && Project::isReadable (file) && ! Project::isDamaged (file), "the last saved version opens in its place");
+        log.check (kept_ (History::Kind::damaged) == 1, "and the damaged file is kept in the history");
         rig.project = std::make_unique<Project> (rig.engine, file);
         log.check (trackName() == "Not saved yet", "with what was last saved (" + trackName() + ")");
+    }
+
+    // Version history: one hidden file beside the project, a checkpoint per save
+    {
+        log.title ("Version history");
+        Rig rig (outDir, "history", 48000.0, 256, 1);
+        auto file = rig.project->getEditFile();
+        auto history = History::fileFor (file);
+        auto saved = [&] { int n = 0; for (auto& c : History::read (file)) n += c.kind == History::Kind::saved ? 1 : 0; return n; };
+        auto rename = [&] (const juce::String& name) { te::getAudioTracks (rig.edit())[0]->setName (name); rig.edit().markAsChanged(); };
+
+        history.deleteFile();
+        rename ("First");
+        rig.project->save (false);
+        const int base = saved();     // the file as it was opened, and as saved
+        log.check (history.existsAsFile() && history.getFileName() == ".history.history" && base >= 1
+                    && History::load (History::read (file).getLast()).toString().contains ("\"First\""),
+                   "saving keeps the version in the hidden " + history.getFileName());
+        log.check (! rig.project->getFolder().getChildFile ("Backups").exists(), "and there's no Backups folder");
+
+        rig.project->save (false);
+        log.check (saved() == base, "saving again with nothing changed adds nothing");
+
+        rename ("Second");
+        rig.project->save (false);
+        auto list = History::read (file);
+        auto first = list.size() == base + 1 ? History::load (list[base - 1]).toString() : juce::String();
+        log.check (list.size() == base + 1 && first.contains ("\"First\"") && ! first.contains ("\"Second\"")
+                    && History::load (list.getLast()).toString().contains ("\"Second\""), "each version reads back as it was saved");
+        log.check (list.getLast().compressedSize * 2 < list.getLast().size, "compressed (" + juce::String (list.getLast().compressedSize)
+                                                                                 + " bytes for " + juce::String (list.getLast().size) + ")");
+
+        // A checkpoint cut short, as an unfinished sync leaves it
+        {
+            juce::MemoryBlock data;
+            history.loadFileAsData (data);
+            history.replaceWithData (data.getData(), data.getSize() - 40);
+        }
+        log.check (History::read (file).size() == base, "one cut short is left out, and the ones before it still read");
+        rename ("Third");
+        rig.project->save (false);
+        list = History::read (file);
+        log.check (list.size() == base + 1 && History::load (list.getLast()).toString().contains ("\"Third\""), "and the next save takes its place");
+
+        // A copy a sync service made when two computers saved at once
+        auto mb = [] (const juce::String& t) { return juce::MemoryBlock (t.toRawUTF8(), t.getNumBytesAsUTF8()); };
+        auto before = History::read (file).size();
+        auto conflicted = history.getSiblingFile (history.getFileNameWithoutExtension() + " (conflicted copy).history");
+        auto aside = history.getSiblingFile ("aside");
+        history.copyFileTo (aside);
+        History::add (file, mb ("<EDIT elsewhereSavedBy=\"Sam &amp; Lee\"/>"), History::Kind::saved);
+        history.moveFileTo (conflicted);
+        aside.moveFileTo (history);
+        auto merged = History::read (file);
+        log.check (merged.size() == before + 1 && merged.getLast().savedBy == "Sam & Lee",
+                   "a sync service's conflicted copy is read too, without repeats (" + juce::String (merged.size()) + ")");
+        conflicted.deleteFile();
+
+        // The oldest go once there are too many
+        rig.project.reset();
+        history.deleteFile();
+
+        for (int i = 0; i < History::keep + 5; ++i)
+        {
+            History::add (file, mb ("<EDIT n=\"" + juce::String (i) + "\"/>"), History::Kind::saved,
+                          juce::Time (2026, 0, 1, 0, 0, 0) + juce::RelativeTime::minutes (i));
+        }
+
+        list = History::read (file);
+        log.check (list.size() == History::keep && History::load (list.getLast()).toString().contains ("n=\"" + juce::String (History::keep + 4) + "\"")
+                    && History::load (list[0]).toString().contains ("n=\"5\""), "it keeps the newest " + juce::String (History::keep));
+
+        // A project from before the history file: its Backups folder moves in
+        history.deleteFile();
+        auto backups = file.getParentDirectory().getChildFile ("Backups");
+        backups.createDirectory();
+        backups.getChildFile ("history 2026-11-10 09-15-00.elsewhere").replaceWithText ("<EDIT v=\"a\"/>");
+        backups.getChildFile ("history 2026-11-11 10-30-00.elsewhere").replaceWithText ("<EDIT v=\"b\"/>");
+        backups.getChildFile ("history 2026-11-11 11-00-00 unsaved.elsewhere").replaceWithText ("<EDIT v=\"c\"/>");
+        rig.project = std::make_unique<Project> (rig.engine, file);
+        list = History::read (file);
+        log.check (list.size() >= 3 && list[0].time == juce::Time (2026, 10, 10, 9, 15, 0) && History::load (list[0]).toString().contains ("v=\"a\"")
+                    && list[2].kind == History::Kind::unsaved, "an old Backups folder moves into the history, with its times");
+        log.check (! backups.exists(), "and goes to the bin");
     }
 
     // Two computers with a project open both stay in its lock file

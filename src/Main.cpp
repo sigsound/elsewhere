@@ -2518,9 +2518,9 @@ private:
                          .withIconType (juce::MessageBoxIconType::WarningIcon)
                          .withTitle ("This project can't be read")
                          .withMessage ("\"" + editFile.getFileName() + "\" is damaged, or hasn't finished syncing. It hasn't been changed.\n\n"
-                                       "If it's in a synced folder, wait for syncing to finish and open it again. Otherwise, Open Latest Backup "
-                                       "puts the most recent backup in its place and keeps the damaged file in the project's Backups folder.")
-                         .withButton ("Open Latest Backup")
+                                       "If it's in a synced folder, wait for syncing to finish and open it again. Otherwise, Open Last Saved Version "
+                                       "puts the most recent version from its history in its place, and keeps the damaged file in the history too.")
+                         .withButton ("Open Last Saved Version")
                          .withButton ("Cancel");
 
         juce::AlertWindow::showAsync (options, [this, editFile] (int result)
@@ -2531,8 +2531,8 @@ private:
             if (Project::restoreLatestBackup (editFile))
                 confirmDiscardChanges ([this, editFile] { loadProject (editFile); });
             else
-                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "No backup to open",
-                    "There's no backup that can be read in " + editFile.getParentDirectory().getChildFile ("Backups").getFullPathName() + ".");
+                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "No saved version to open",
+                    "This project's history has no saved version that can be read.");
         });
     }
 

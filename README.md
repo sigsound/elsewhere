@@ -119,9 +119,13 @@ Dev flags:
 - **Browser preview**: click an audio file to hear it.
 - **Crash-safe plug-in scanning**: each plug-in is scanned in a separate helper process, so a bad plug-in can't crash Elsewhere.
 - **Recording**: audio from any interface input (each input shows up as mono, plus stereo pairs), and MIDI from any keyboard. Selecting an instrument track routes the keyboard to it (auto-arm).
+- **Capture MIDI** (⇧⌘C): Elsewhere keeps the last 30 seconds played on every MIDI input, recording or not. Capture MIDI turns it into a clip, widened to whole bars.
+- **Match Level**: any device can play at the level it's given, so turning it on and off compares the sound, not the loudness.
+- **Reference**: choose a finished song (View → Choose Reference…) and press **R** to switch between it and the mix, at the same loudness. It skips the master chain and never goes into an export.
 - **Transport**: tempo (drag or tap), time signature, metronome, loop, and a CPU meter.
 - **Look (Orbit)**: the same design as Somewhere, in light and dark (following macOS, or set in Appearance): flat greys, ink for whatever is selected or on, red only for recording, and round keys, knobs and fader thumbs. Tracks are the only things with colours (twelve, in `src/Theme.h`): a clip is a wash of its track's colour with its waveform or notes in the full colour. The designs are on the "Elsewhere · Orbit" page of the Elsewhere Design System Penpot file.
-- **Projects**: each project is a self-contained folder with relative paths. Imported audio is copied in, every save makes a timestamped backup, and you can export to WAV.
+- **Projects**: each project is a self-contained folder with relative paths. Imported audio is copied in, and every save is kept, compressed, in one hidden history file beside the project (`.My Song.history`). **File → Version History…** goes back to any of them, or opens one as a separate copy.
+- **Export**: the mix, stems or both, as WAV, AIFF, FLAC, MP3 or Ogg Vorbis, at a chosen loudness. **File → Export Several Projects…** exports a batch with the same settings, each into its own project's Exports folder.
 - **Sharing via Dropbox/iCloud**: a lock file warns you when your collaborator has the project open, and Elsewhere detects Dropbox "conflicted copies".
 
 ## Keyboard shortcuts
@@ -169,7 +173,7 @@ Put the project folder in Dropbox (or iCloud Drive / Google Drive), turn on **Fi
 - **Merging:** simultaneous edits are merged automatically. For the same setting, the latest change wins; simultaneously added items keep a consistent order on both machines.
 - **Presence:** collaborators appear as coloured chips in the top bar, with a dot on the track they're working on.
 - **Comments:** notes about a stretch of a track. Click **Add Comment** in the Comments tab and drag across a track to mark what it's about (or right-click a clip → Add Comment…, or comment on a selection in the clip editor). The Comments tab reads like a book: the contents list every note in song order, the open one shows as a page, and turning pages moves the playhead to it (while playing, it turns to the note under the playhead). Notes show as numbered marks along their tracks; click one to open it. Comments sync like everything else.
-- **Version History:** File → Version History… reopens any earlier save as a separate copy.
+- **Version History:** File → Version History… opens any earlier save as a separate copy (in a shared project it doesn't wind everyone back).
 - **Audio files:** imported audio is named by content, so two people importing different files with the same name never clash. Recordings are tagged with who made them. If audio arrives after the edit that uses it, Elsewhere picks it up as soon as it lands.
 - **Tested:** `scripts/tests/collab-sync.sh <project folder>` runs two instances editing at once through a simulated, laggy cloud sync and checks that they end up identical.
 
