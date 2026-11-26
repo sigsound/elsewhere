@@ -121,7 +121,7 @@ Dev flags:
 - **Recording**: audio from any interface input (each input shows up as mono, plus stereo pairs), and MIDI from any keyboard. Selecting an instrument track routes the keyboard to it (auto-arm).
 - **Capture MIDI** (⇧⌘C): Elsewhere keeps the last 30 seconds played on every MIDI input, recording or not. Capture MIDI turns it into a clip, widened to whole bars.
 - **Match Level**: any device can play at the level it's given, so turning it on and off compares the sound, not the loudness.
-- **Reference**: choose a finished song (View → Choose Reference…) and press **R** to switch between it and the mix, at the same loudness. It skips the master chain and never goes into an export.
+- **Reference**: choose a finished song (View → Compare with Reference…) and press **R** to switch between it and the mix, at the same loudness. It skips the master chain and never goes into an export.
 - **Transport**: tempo (drag or tap), time signature, metronome, loop, and a CPU meter.
 - **Look (Orbit)**: the same design as Somewhere, in light and dark (following macOS, or set in Appearance): flat greys, ink for whatever is selected or on, red only for recording, and round keys, knobs and fader thumbs. Tracks are the only things with colours (twelve, in `src/Theme.h`): a clip is a wash of its track's colour with its waveform or notes in the full colour. The designs are on the "Elsewhere · Orbit" page of the Elsewhere Design System Penpot file.
 - **Projects**: each project is a self-contained folder with relative paths. Imported audio is copied in, and every save is kept, compressed, in one hidden history file beside the project (`.My Song.history`). **File → Version History…** goes back to any of them, or opens one as a separate copy.
