@@ -11,6 +11,7 @@
 #include "devices/CompressorDevice.h"
 #include "MidiLanes.h"
 #include "ExportTests.h"
+#include "MasteringTests.h"
 #include "Export.h"
 #include "ExportBatch.h"
 #include "PluginWindow.h"
@@ -291,6 +292,14 @@ public:
         {
             auto args = getCommandLineParameterArray();
             setApplicationReturnValue (ExportTests::run (*engine, juce::File (args[args.indexOf ("--export-test") + 1])) == 0 ? 0 : 1);
+            quit();
+            return;
+        }
+
+        if (commandLine.contains ("--mastering-test"))
+        {
+            auto args = getCommandLineParameterArray();
+            setApplicationReturnValue (MasteringTests::run (*engine, juce::File (args[args.indexOf ("--mastering-test") + 1])) == 0 ? 0 : 1);
             quit();
             return;
         }
