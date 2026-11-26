@@ -165,6 +165,7 @@ MainComponent::MainComponent (te::Engine& e, const juce::File& editFile, AppActi
     };
 
     transportBar->onToggleView = [this] { perform (cmdToggleMixer); };
+    transportBar->onBackToAlbum = [this] { perform (cmdBackToAlbum); };
 
     // An insert that opens in the device panel: make sure the panel is showing
     mixer->onShowDevices = [this]
@@ -1473,8 +1474,8 @@ void MainComponent::timerCallback()
         auto foreign = project->getForeignLock();
         auto album = Mastering::getReturn (props(), project->getEditFile());
         transportBar->setStatusText (foreign ? "Also open by " + foreign->user + " (" + foreign->machine + ")"
-                                     : album.existsAsFile() ? "From " + album.getFileNameWithoutExtension() + ": File > Back to Album"
-                                                            : juce::String());
+                                     : juce::String());
+        transportBar->setBackToAlbum (album.existsAsFile() ? album.getFileNameWithoutExtension() : juce::String());
     }
 
     auto phones = somewhereLink->getConnectedNames();

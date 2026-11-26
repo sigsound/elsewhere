@@ -340,6 +340,11 @@ public:
         };
         addChildComponent (backToArrangement);
 
+        backToAlbum.setColour (juce::TextButton::buttonColourId, Colours::accent);
+        backToAlbum.setColour (juce::TextButton::textColourOffId, Colours::textInverse);
+        backToAlbum.onClick = [this] { if (onBackToAlbum) onBackToAlbum(); };
+        addChildComponent (backToAlbum);
+
         position.setJustificationType (juce::Justification::centredLeft);
         position.setFont (juce::FontOptions (18.0f, juce::Font::plain).withStyle ("Light"));
         position.setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
@@ -432,13 +437,29 @@ public:
     void setStatusText (const juce::String& s)      { status.setText (s, juce::dontSendNotification); }
     juce::String getStatusText() const              { return status.getText(); }
 
+    /** A song opened from a mastering project shows a button back to it; empty hides it. */
+    void setBackToAlbum (const juce::String& albumName)
+    {
+        if (albumName == backToAlbumName)
+            return;
+
+        backToAlbumName = albumName;
+        auto label = juce::String::fromUTF8 ("\xe2\x86\xa9 Back to ") + albumName;
+        backToAlbum.setButtonText (label);
+        backToAlbum.setTitle ("Back to " + albumName);
+        backToAlbum.setTooltip ("Go back to the mastering project " + albumName + ". If you saved changes to this song, the album plays them once its render is updated.");
+        updateSideButtons();
+    }
+
+    std::function<void()> onBackToAlbum;
+
     /** Coloured name chips for collaborators who are in the project right now. */
     void setCollaborators (std::vector<std::pair<juce::String, juce::Colour>> people)
     {
         if (people != collaborators)
         {
             collaborators = std::move (people);
-            status.setVisible (collaborators.empty());
+            updateSideButtons();
 
             juce::StringArray names;
             for (auto& p : collaborators)
@@ -508,6 +529,8 @@ public:
         status.setBounds (side.getWidth() >= 70 ? side : juce::Rectangle<int>());
         collaboratorInfo.setBounds (side);
         backToArrangement.setBounds (side.withSizeKeepingCentre (juce::jmin (side.getWidth(), 160), h));
+        auto albumSide = side.withTrimmedLeft (8);
+        backToAlbum.setBounds (albumSide.withSizeKeepingCentre (juce::jmin (albumSide.getWidth(), backToAlbum.getBestWidthForHeight (26) + 8), 26));
 
         auto centre = r.withSizeKeepingCentre (juce::jmin (r.getWidth(), centreW), h);
 
@@ -557,6 +580,15 @@ private:
     juce::TextButton viewToggle { "mixer" }, automationArm { "auto" }, midiLearn { "midi" }, liveButton { "live" },
                      punchButton { "punch" };
     juce::TextButton backToArrangement { juce::String::fromUTF8 ("\xe2\x86\xa9 Back to Arrangement") };
+    juce::TextButton backToAlbum;
+    juce::String backToAlbumName;
+
+    /** One thing has the space beside the transport: Back to Arrangement, then Back to Album, then the status. */
+    void updateSideButtons()
+    {
+        backToAlbum.setVisible (backToAlbumName.isNotEmpty() && ! backToArrangement.isVisible());
+        status.setVisible (collaborators.empty() && ! backToArrangement.isVisible() && ! backToAlbum.isVisible());
+    }
     juce::Array<double> tapTimes;
     std::vector<std::pair<juce::String, juce::Colour>> collaborators;
 
@@ -687,7 +719,7 @@ private:
         automationArm.setToggleState (edit.getAutomationRecordManager().isWritingAutomation(), juce::dontSendNotification);
         midiLearn.setToggleState (edit.engine.getMidiLearnState().isActive(), juce::dontSendNotification);
         backToArrangement.setVisible (EngineHelpers::anyTrackPlayingSessionClips (edit));
-        status.setVisible (collaborators.empty() && ! backToArrangement.isVisible());
+        updateSideButtons();
 
         if (! tempo.isBeingEdited() && ! tempo.isMouseButtonDown())
             tempo.setValue (edit.tempoSequence.getTempo (0)->getBpm(), false);
