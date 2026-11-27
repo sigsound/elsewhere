@@ -254,8 +254,8 @@ public:
                         if (flutterPhase >= 1.0) flutterPhase -= 1.0;
 
                         const double depthMs = 0.8 + 4.2 * py;
-                        const double flutter = 0.12 * std::sin (juce::MathConstants<double>::twoPi * flutterPhase);
-                        const double twoPi = juce::MathConstants<double>::twoPi;
+                        const double flutter = 0.12 * std::sin (dspmath::MathConstants<double>::twoPi * flutterPhase);
+                        const double twoPi = dspmath::MathConstants<double>::twoPi;
                         const double spread = 0.17 * (1.0 - py);                          // stereo width as a chorus
                         const double dL = (6.0 + depthMs * (0.5 + 0.5 * std::sin (twoPi * lofiPhase)) + flutter) * 0.001 * rate;
                         const double dR = (6.0 + depthMs * (0.5 + 0.5 * std::sin (twoPi * (lofiPhase + spread))) + flutter) * 0.001 * rate;

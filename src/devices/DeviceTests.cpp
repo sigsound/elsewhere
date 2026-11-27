@@ -12,6 +12,7 @@
 #include "ModularDevice.h"
 #include "OrganicDevice.h"
 #include "HazeDevice.h"
+#include "HazeEngine.h"
 #include "MidiEffects.h"
 #include "StepsDevice.h"
 #include "EchoDevice.h"
@@ -2175,6 +2176,7 @@ int run (te::Engine& engine, const juce::File& outDir)
             process (hz, b, midi);
             return b;
         };
+
         auto pitchOf = [] (const juce::AudioBuffer<float>& b, double fromSec, int w = 4096)
         {
             const int start = (int) (fromSec * sr);
@@ -2364,6 +2366,72 @@ int run (te::Engine& engine, const juce::File& outDir)
         snapshot (hz, outDir.getChildFile ("haze-light.png"));
         Theme::apply (Themes::dark); refreshLookAndFeel();
         reset();
+
+        // The device is HazeEngine: the same notes through the engine on its own come out the
+        // same, sample for sample (glitches, hiss, mod wheel and bend included)
+        {
+            hz.loadPatch (3);                       // Late Broadcast
+            setParam (hz.tracking, 100.0f);
+            setParam (hz.chroma, 3.0f);
+            reset();
+            const int s1 = (int) sr;
+            std::vector<std::pair<int, juce::MidiMessage>> midi = {
+                { 0, on (60) }, { 0, on (64, 70) }, { 4800, on (67, 40) }, { s1, off (60) },
+                { s1 + 9600, juce::MidiMessage::controllerEvent (1, 1, 90) }, { s1 + 24000, off (64) }, { s1 + 24000, off (67) },
+                { s1 + 28800, juce::MidiMessage::pitchWheel (1, 12000) }, { s1 + 33600, on (48, 110) }, { 2 * s1 + 12000, off (48) } };
+            auto viaDevice = play (midi, 4.0);
+            writeWav (outDir.getChildFile ("haze-phrase.wav"), viaDevice);
+
+            HazeEngine e;
+            e.setPatch (3);
+            e.params.tracking = 100.0f;
+            e.params.chroma = 3.0f;
+            e.prepare (sr, block);
+            juce::AudioBuffer<float> viaEngine (2, viaDevice.getNumSamples());
+            viaEngine.clear();
+            auto* L = viaEngine.getWritePointer (0);
+            auto* R = viaEngine.getWritePointer (1);
+
+            // In the same pieces the device renders in: blocks, split at each message
+            for (int start = 0; start < viaEngine.getNumSamples(); start += block)
+            {
+                const int n = juce::jmin (block, viaEngine.getNumSamples() - start);
+                int done = 0;
+                for (auto& [pos, m] : midi)
+                {
+                    if (pos < start || pos >= start + n) continue;
+                    if (pos - start > done) { e.render (L + start + done, R + start + done, pos - start - done); done = pos - start; }
+                    if (m.isNoteOn()) e.noteOn (m.getNoteNumber(), m.getFloatVelocity());
+                    else if (m.isNoteOff()) e.noteOff (m.getNoteNumber());
+                    else if (m.isController()) e.setModWheel ((float) m.getControllerValue() / 127.0f);
+                    else if (m.isPitchWheel()) e.setPitchBend ((float) (m.getPitchWheelValue() - 8192) / 8192.0f);
+                }
+                if (done < n) e.render (L + start + done, R + start + done, n - done);
+            }
+
+            float worst = 0.0f;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < viaDevice.getNumSamples(); ++i)
+                    worst = juce::jmax (worst, std::abs (viaDevice.getSample (ch, i) - viaEngine.getSample (ch, i)));
+            check (r, worst == 0.0f && viaDevice.getMagnitude (0, viaDevice.getNumSamples()) > 0.05f,
+                   "the device plays HazeEngine: the engine on its own renders the same, sample for sample (worst " + juce::String (worst) + ")");
+
+            HazeEngine again;
+            again.setPatch (3); again.params.tracking = 100.0f; again.params.chroma = 3.0f;
+            again.prepare (sr);
+            juce::AudioBuffer<float> b1 (2, s1), b2 (2, s1);
+            b1.clear(); b2.clear();
+            again.noteOn (60, 0.8f); again.render (b1.getWritePointer (0), b1.getWritePointer (1), s1);
+            again.prepare (sr);
+            again.noteOn (60, 0.8f); again.render (b2.getWritePointer (0), b2.getWritePointer (1), s1);
+            bool same = true;
+            for (int i = 0; i < s1; ++i) same = same && b1.getSample (0, i) == b2.getSample (0, i);
+            check (r, same, "prepare() starts it afresh: the same notes render the same audio every time");
+            check (r, HazeEngine::patchCount() == (int) HazeDevice::patches().size() && juce::String (HazeEngine::patchName (1)) == "Pastel Mall",
+                   "the engine has the device's patches");
+            hz.loadPatch (0);
+            reset();        // bend and mod wheel back to rest
+        }
     }
 
     //==============================================================================
