@@ -17,6 +17,7 @@
 #include "StepsDevice.h"
 #include "EchoDevice.h"
 #include "ReferenceDevice.h"
+#include "SomewhereControlDevice.h"
 
 namespace elsewhere
 {
@@ -54,6 +55,8 @@ const std::vector<DeviceRegistry::Entry>& DeviceRegistry::getAll()
           [] (te::PluginCreationInfo i) -> te::Plugin::Ptr { return new EchoDevice (i); } },
         { ReferenceDevice::xmlTypeName,  "Reference",  "A finished song to compare your mix with, at matched loudness; press R to switch", false,
           [] (te::PluginCreationInfo i) -> te::Plugin::Ptr { return new ReferenceDevice (i); } },
+        { SomewhereControlDevice::xmlTypeName, "Somewhere Control", "Performance effects played from an XY pad, on Somewhere's FX screen or with the mouse: filter, delay, stutter, tape stop, bitcrush, wash and lo-fi", false,
+          [] (te::PluginCreationInfo i) -> te::Plugin::Ptr { return new SomewhereControlDevice (i); } },
     };
 
     return all;

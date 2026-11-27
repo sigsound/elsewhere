@@ -16,6 +16,7 @@
 #include "StepsDevice.h"
 #include "EchoDevice.h"
 #include "ReferenceDevice.h"
+#include "SomewhereControlDevice.h"
 #include "../Modulators.h"
 #include "../SessionRecorder.h"
 #include "../drums/DrumTrack.h"
@@ -2855,6 +2856,161 @@ int run (te::Engine& engine, const juce::File& outDir)
         snapshot (ref, outDir.getChildFile ("reference.png"));
     }
 
+    r.log << "Somewhere Control\n";
+    {
+        auto& sc = make<SomewhereControlDevice> (*edit, SomewhereControlDevice::xmlTypeName);
+        auto fresh = [&] (int effect, float x, float y)
+        {
+            setParam (sc.effect, (float) effect); setParam (sc.x, x); setParam (sc.y, y);
+            setParam (sc.on, 0.0f); setParam (sc.latch, 0.0f);
+            sc.initialise ({ te::TimePosition(), sr + 1.0, block });   // a new rate starts it afresh
+            sc.initialise ({ te::TimePosition(), sr, block });
+        };
+        auto same = [] (const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b)
+        {
+            for (int ch = 0; ch < a.getNumChannels(); ++ch)
+                for (int i = 0; i < a.getNumSamples(); ++i)
+                    if (a.getSample (ch, i) != b.getSample (ch, i))
+                        return false;
+            return true;
+        };
+        auto rmsDb = [] (const juce::AudioBuffer<float>& b, double from, double to)
+        {
+            auto s0 = (int) (from * sr), s1 = juce::jmin (b.getNumSamples(), (int) (to * sr));
+            return juce::Decibels::gainToDecibels (b.getRMSLevel (0, s0, s1 - s0), -200.0f);
+        };
+
+        check (r, SomewhereControlDevice::effectNames().size() == PerformanceFx::numEffects, "a name for each of the seven effects");
+
+        // Off, a loud sound passes through untouched (not even rounded off near full scale)
+        fresh (PerformanceFx::filter, 0.05f, 0.9f);
+        auto loud = sine (220.0, 0.98f, 1.0), dry = loud;
+        process (sc, loud);
+        check (r, same (loud, dry), "off: the sound passes through untouched");
+
+        // Filter, left: a low-pass that takes out a 5 kHz tone
+        fresh (PerformanceFx::filter, 0.05f, 0.0f);
+        setParam (sc.on, 1.0f);
+        auto high = sine (5000.0, 0.5f, 1.0);
+        process (sc, high);
+        check (r, tailRmsDb (high) < tailRmsDb (sine (5000.0, 0.5f, 1.0)) - 30.0f, "Filter at the left closes a low-pass (" + juce::String (tailRmsDb (high), 1) + " dB)");
+
+        // Filter, right: a high-pass that takes out a 60 Hz tone
+        fresh (PerformanceFx::filter, 0.95f, 0.0f);
+        setParam (sc.on, 1.0f);
+        auto low = sine (60.0, 0.5f, 1.0);
+        process (sc, low);
+        check (r, tailRmsDb (low) < tailRmsDb (sine (60.0, 0.5f, 1.0)) - 30.0f, "Filter at the right opens a high-pass (" + juce::String (tailRmsDb (low), 1) + " dB)");
+
+        // Latch keeps it on with the pad let go
+        fresh (PerformanceFx::filter, 0.05f, 0.0f);
+        setParam (sc.latch, 1.0f);
+        auto latched = sine (5000.0, 0.5f, 1.0);
+        process (sc, latched);
+        check (r, tailRmsDb (latched) < -20.0f, "Latch keeps the effect on");
+
+        // Delay: a click while on comes back in time with the song, and keeps ringing once let go
+        {
+            fresh (PerformanceFx::delay, 0.9f, 0.5f);    // a 1/4 note: at 120 bpm, 500 ms
+            juce::AudioBuffer<float> b (2, (int) (2.0 * sr));
+            b.clear();
+            for (int i = 0; i < 48; ++i) { b.setSample (0, 4800 + i, 0.5f); b.setSample (1, 4800 + i, 0.5f); }
+
+            // On for the first 0.2 s (so the click goes in), then off
+            juce::AudioBuffer<float> first (b.getArrayOfWritePointers(), 2, 0, (int) (0.2 * sr));
+            setParam (sc.on, 1.0f);
+            process (sc, first);
+            setParam (sc.on, 0.0f);
+            juce::AudioBuffer<float> rest (b.getArrayOfWritePointers(), 2, (int) (0.2 * sr), b.getNumSamples() - (int) (0.2 * sr));
+            process (sc, rest, {}, 0.2);
+
+            int echoAt = -1;
+            for (int i = 4800 + 600; i < b.getNumSamples() && echoAt < 0; ++i)
+                if (std::abs (b.getSample (0, i)) > 0.05f || std::abs (b.getSample (1, i)) > 0.05f)
+                    echoAt = i;
+            const auto ms = (echoAt - 4800) / sr * 1000.0;
+            check (r, std::abs (ms - 500.0) < 15.0, "Delay: the echo comes back a 1/4 note later (" + juce::String (ms, 1) + " ms at 120 bpm)");
+            check (r, rmsDb (b, 0.5, 1.0) > -70.0f, "Delay: the tail keeps ringing after the pad is let go");
+
+            // Once the echoes have died away it goes back to leaving the sound untouched
+            setParam (sc.y, 0.0f);
+            auto later = sine (220.0, 0.98f, 4.0), later0 = later;
+            process (sc, later, {}, 2.0);
+            juce::AudioBuffer<float> end (later.getArrayOfWritePointers(), 2, (int) (3.5 * sr), (int) (0.5 * sr));
+            juce::AudioBuffer<float> end0 (later0.getArrayOfWritePointers(), 2, (int) (3.5 * sr), (int) (0.5 * sr));
+            check (r, same (end, end0), "once the echoes have died away the sound passes through untouched again");
+        }
+
+        // Stutter repeats what just played: a tone that stops keeps sounding while it's on
+        {
+            fresh (PerformanceFx::stutter, 0.3f, 0.0f);
+            auto b = sine (440.0, 0.5f, 1.0);
+            for (int i = (int) (0.5 * sr); i < b.getNumSamples(); ++i) { b.setSample (0, i, 0.0f); b.setSample (1, i, 0.0f); }
+            juce::AudioBuffer<float> first (b.getArrayOfWritePointers(), 2, 0, (int) (0.5 * sr));
+            process (sc, first);
+            setParam (sc.on, 1.0f);
+            juce::AudioBuffer<float> rest (b.getArrayOfWritePointers(), 2, (int) (0.5 * sr), (int) (0.5 * sr));
+            process (sc, rest, {}, 0.5);
+            check (r, rmsDb (b, 0.6, 1.0) > -15.0f, "Stutter repeats the slice that just played (" + juce::String (rmsDb (b, 0.6, 1.0), 1) + " dB after the tone stopped)");
+        }
+
+        // Tape stop slows to silence
+        {
+            fresh (PerformanceFx::tapeStop, 0.0f, 0.5f);     // 0.15 s
+            setParam (sc.on, 1.0f);
+            auto b = sine (440.0, 0.5f, 1.0);
+            process (sc, b);
+            check (r, rmsDb (b, 0.5, 1.0) < -60.0f, "Tape Stop slows to a stop (" + juce::String (rmsDb (b, 0.5, 1.0), 1) + " dB)");
+        }
+
+        // Every effect at every corner stays finite and in range, on a mono track too
+        bool stable = true;
+        for (int e = 0; e < PerformanceFx::numEffects; ++e)
+            for (auto [x, y] : { std::pair { 0.0f, 0.0f }, { 1.0f, 1.0f }, { 0.0f, 1.0f }, { 1.0f, 0.0f } })
+            {
+                fresh (e, x, y);
+                setParam (sc.on, 1.0f);
+                auto b = sine (110.0, 0.9f, 0.5);
+                process (sc, b);
+                juce::AudioBuffer<float> mono (1, (int) (0.2 * sr));
+                for (int i = 0; i < mono.getNumSamples(); ++i) mono.setSample (0, i, 0.9f * (float) std::sin (i * 0.02));
+                process (sc, mono);
+                if (! isFinite (b) || ! isFinite (mono) || b.getMagnitude (0, b.getNumSamples()) > 2.0f)
+                {
+                    stable = false;
+                    r.log << "        " << SomewhereControlDevice::effectNames()[e] << " at " << x << ", " << y << " misbehaved\n";
+                }
+            }
+        check (r, stable, "every effect at every corner of the pad stays finite, stereo and mono");
+
+        // The readouts match the effect
+        check (r, SomewhereControlDevice::describeX (PerformanceFx::filter, 0.5f) == "Off"
+                   && SomewhereControlDevice::describeX (PerformanceFx::delay, 0.95f) == "1/4"
+                   && SomewhereControlDevice::describeX (PerformanceFx::stutter, 0.95f) == "1/32", "the pad reads out what X does");
+
+        // Added to a track, it goes after the track's own devices and before the fader and meter
+        {
+            auto scEdit = te::createEmptyEdit (engine, outDir.getChildFile ("somewhere-control-test.tracktionedit"));
+            scEdit->ensureNumberOfAudioTracks (1);
+            auto* t = te::getAudioTracks (*scEdit)[0];
+            t->pluginList.insertPlugin (DeviceRegistry::create (*scEdit, EqDevice::xmlTypeName), 0, nullptr);
+            auto* added = SomewhereControlDevice::findOrAddTo (*t);
+            auto* again = SomewhereControlDevice::findOrAddTo (*t);
+            juce::StringArray order;
+            for (auto p : t->pluginList)
+                order.add (dynamic_cast<SomewhereControlDevice*> (p) ? "control" : dynamic_cast<EqDevice*> (p) ? "eq"
+                           : EngineHelpers::isMixerPlugin (*p) ? "mixer" : "other");
+            check (r, added != nullptr && added == again, "a track gets one Somewhere Control, found again after");
+            check (r, order.joinIntoString (" ").startsWith ("eq control mixer"), "it goes after the track's devices, before the fader (" + order.joinIntoString (" ") + ")");
+        }
+
+        fresh (PerformanceFx::filter, 0.3f, 0.7f);
+        setParam (sc.on, 1.0f);
+        snapshot (sc, outDir.getChildFile ("somewhere-control.png"));
+        setParam (sc.on, 0.0f);
+    }
+
+    //==============================================================================
     r.log << "Tape Echo\n";
     {
         auto& ec = make<EchoDevice> (*edit, EchoDevice::xmlTypeName);
