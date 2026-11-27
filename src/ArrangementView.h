@@ -1107,7 +1107,8 @@ public:
         if (dynamic_cast<te::AudioTrack*> (track.get()) == nullptr)
             return false;
 
-        return getDraggedFile (d).existsAsFile() || getDraggedClip (track->edit, d) != nullptr;
+        auto f = getDraggedFile (d);
+        return f.existsAsFile() || isSomewhereBeat (f.getFullPathName()) || getDraggedClip (track->edit, d) != nullptr;
     }
 
     void itemDragEnter (const SourceDetails&) override { isDragOver = true; repaint(); }

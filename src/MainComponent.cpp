@@ -443,6 +443,10 @@ te::AudioTrack* MainComponent::addTrack (bool withInstrument)
 //==============================================================================
 void MainComponent::importFile (const juce::File& f, te::Track& t, te::TimePosition time)
 {
+    // A beat from Somewhere: all of it, on new tracks
+    if (SomewhereBeat::isBeatFolder (f))
+        return importSomewhereBeat (f, time);
+
     auto* at = dynamic_cast<te::AudioTrack*> (&t);
 
     if (at == nullptr || ! f.existsAsFile())
@@ -516,8 +520,9 @@ void MainComponent::showImportDialog()
                                                    juce::File::getSpecialLocation (juce::File::userMusicDirectory),
                                                    EngineHelpers::toWildcards (te::soundFileAndMidiExtensions));
 
+    // Folders too: a beat folder from Somewhere imports in one go
     chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
-                            | juce::FileBrowserComponent::canSelectMultipleItems,
+                            | juce::FileBrowserComponent::canSelectDirectories | juce::FileBrowserComponent::canSelectMultipleItems,
                           [this] (const juce::FileChooser& fc)
     {
         auto files = fc.getResults();
@@ -528,7 +533,7 @@ void MainComponent::showImportDialog()
         // A single file goes onto the selected track at the playhead; several become new tracks at bar 1
         auto target = viewState->focusedTrack.get();
 
-        if (files.size() == 1 && target != nullptr && ! target->isMasterTrack() && ! te::getAudioTracks (project->getEdit()).isEmpty())
+        if (files.size() == 1 && ! files[0].isDirectory() && target != nullptr && ! target->isMasterTrack() && ! te::getAudioTracks (project->getEdit()).isEmpty())
             importFile (files[0], *target, project->getEdit().getTransport().getPosition());
         else
             importAsNewTracks (files, 0s);
@@ -592,11 +597,19 @@ void MainComponent::importSomewhereBeat (const juce::File& folder, te::TimePosit
 
         juce::MessageManager::callAsync ([safeThis] { if (safeThis) safeThis->arrangement->zoomToFit(); });
 
+        juce::String message;
+        auto bpmText = [] (double bpm) { return juce::String (bpm, 2).trimCharactersAtEnd ("0").trimCharactersAtEnd ("."); };
+
+        if (r.songBpm > 0.0)
+            message << "The beat is " << bpmText (b.bpm) << " bpm and this song " << bpmText (r.songBpm) << " bpm. Its MIDI tracks follow the song's tempo, "
+                       "but its stems play as recorded, so they only line up once the song is at " << bpmText (b.bpm) << " bpm.\n\n";
+
         if (! r.missing.isEmpty())
-            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Import " + b.name,
-                "These sounds weren't in the phone's folder, so the beat plays from its stems for now:\n"
-                + r.missing.joinIntoString ("\n")
-                + "\n\nTurn on sending in Somewhere's Settings so its sounds arrive too, then import the beat again to edit it as MIDI.");
+            message << "These sounds didn't come with the beat, so it plays from its stems for now:\n" << r.missing.joinIntoString ("\n")
+                    << "\n\nExport the beat again from an up-to-date Somewhere to edit it as MIDI.";
+
+        if (message.isNotEmpty())
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Import " + b.name, message.trim());
     });
     job->launchThread();
 }

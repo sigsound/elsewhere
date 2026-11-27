@@ -55,6 +55,7 @@ namespace SomewhereBeat
         int keysPad = -1;           // 0-15: the pad whose sound plays the keys
         std::map<int, juce::File> sounds;   // pad (0-15) -> its one-shot, from "sounds"
         double bpm = 0.0;
+        int steps = 0;              // sixteenths
         std::vector<Stem> stems;    // in pad order, the keys last
         juce::File beatMidi, keysMidi;
 
@@ -101,6 +102,7 @@ namespace SomewhereBeat
         b.name = folder.getFileName().fromFirstOccurrenceOf (" ", false, false).fromFirstOccurrenceOf (" ", false, false).trim();
         if (b.name.isEmpty()) b.name = folder.getFileName();
         b.bpm = (double) info["bpm"];
+        b.steps = (int) info["steps"];
         b.keysSound = info["keysSound"].toString();
         b.keysPad = info.hasProperty ("keysPad") ? (int) info["keysPad"] - 1 : -1;
 
@@ -217,6 +219,7 @@ namespace SomewhereBeat
         te::AudioTrack* keys = nullptr;
         juce::Array<te::AudioTrack*> stems;
         juce::StringArray missing;      // sounds that weren't found
+        double songBpm = 0.0;           // set when the song kept a tempo other than the beat's
         bool drumsPlay = false, keysPlay = false;
     };
 
@@ -247,6 +250,19 @@ namespace SomewhereBeat
             return mc;
         }
 
+        /** A clip lasts the whole beat, not just to its last note, so it loops as on the phone. */
+        inline void lastWholeBeat (te::Clip& clip, int steps)
+        {
+            if (steps <= 0)
+                return;
+
+            auto& ts = clip.edit.tempoSequence;
+            auto end = ts.toTime (ts.toBeats (clip.getPosition().getStart()) + te::BeatDuration::fromBeats (steps / 4.0));
+
+            if (end > clip.getPosition().getEnd())
+                clip.setEnd (end, true);
+        }
+
         /** A path the edit can find again when the project moves (relative inside the project). */
         inline juce::String pathFor (te::Edit& edit, const juce::File& f)
         {
@@ -275,8 +291,13 @@ namespace SomewhereBeat
             if (! t->getClips().isEmpty())
                 empty = false;
 
-        if (empty && beat.bpm > 0.0)
-            edit.tempoSequence.getTempo (0)->setBpm (juce::jlimit (20.0, 999.0, beat.bpm));
+        if (auto* tempo = edit.tempoSequence.getTempo (0); tempo != nullptr && beat.bpm > 0.0)
+        {
+            if (empty)
+                tempo->setBpm (juce::jlimit (20.0, 999.0, beat.bpm));
+            else if (std::abs (tempo->getBpm() - beat.bpm) > 0.01)
+                r.songBpm = tempo->getBpm();
+        }
 
         if (beat.beatMidi.existsAsFile())
         {
@@ -311,7 +332,8 @@ namespace SomewhereBeat
                     r.drumsPlay = all;
                 }
 
-                detail::addMidi (*r.drums, beat.beatMidi, start);
+                if (auto* mc = detail::addMidi (*r.drums, beat.beatMidi, start))
+                    detail::lastWholeBeat (*mc, beat.steps);
             }
         }
 
@@ -342,7 +364,8 @@ namespace SomewhereBeat
                     }
                 }
 
-                detail::addMidi (*r.keys, beat.keysMidi, start);
+                if (auto* mc = detail::addMidi (*r.keys, beat.keysMidi, start))
+                    detail::lastWholeBeat (*mc, beat.steps);
             }
         }
 

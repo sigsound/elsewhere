@@ -273,6 +273,9 @@ int run (te::Engine& engine, const juce::File& outDir)
                         for (auto n : mc->getSequence().getNotes())
                             ++notes, soft += n->getVelocity() < 90 ? 1 : 0;
             log.check (notes == 2 && soft == 1, "Beat.mid is on the drum track, soft and hard steps kept");
+            if (r.drums != nullptr && ! r.drums->getClips().isEmpty())
+                log.check (std::abs (p.getEdit().tempoSequence.toBeats (r.drums->getClips().getFirst()->getPosition().getEnd()).inBeats() - 4.0) < 0.01,
+                           "the MIDI clip lasts the whole beat (16 steps), not just to its last note");
 
             auto* sampler = r.keys != nullptr ? r.keys->pluginList.findFirstPluginOfType<te::SamplerPlugin>() : nullptr;
             if (sampler != nullptr) sampler->flushPendingUpdates();
@@ -292,7 +295,8 @@ int run (te::Engine& engine, const juce::File& outDir)
             first->insertWaveClip ("Other", take, te::ClipPosition { te::TimeRange (te::TimePosition(), te::TimePosition::fromSeconds (1.0)), {} }, false);
             auto r = build (p);
 
-            log.check (juce::approximatelyEqual (p.getEdit().tempoSequence.getTempo (0)->getBpm(), 120.0), "a song with clips keeps its tempo");
+            log.check (juce::approximatelyEqual (p.getEdit().tempoSequence.getTempo (0)->getBpm(), 120.0) && juce::approximatelyEqual (r.songBpm, 120.0),
+                       "a song with clips keeps its tempo, and says so");
             log.check (r.missing.isEmpty() && r.drumsPlay && ! r.drums->isMuted (false) && r.stems[0]->isMuted (false) && r.stems[1]->isMuted (false),
                        "with every sound there, the drum track plays and its stems are muted");
         }
