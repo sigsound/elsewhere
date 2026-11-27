@@ -457,12 +457,14 @@ public:
 
     //==============================================================================
     /** Copies an external audio file into the project so the project stays self-contained. */
-    juce::File importAudioFile (const juce::File& source)
+    juce::File importAudioFile (const juce::File& source, const juce::String& subfolder = {})
     {
         if (source.isAChildOf (getFolder()))
             return source;
 
         auto importDir = getFolder().getChildFile ("Samples/Imported");
+        if (subfolder.isNotEmpty())
+            importDir = importDir.getChildFile (juce::File::createLegalFileName (subfolder));
         importDir.createDirectory();
         auto dest = importDir.getChildFile (source.getFileName());
 

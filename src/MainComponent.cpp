@@ -587,7 +587,7 @@ void MainComponent::importSomewhereBeat (const juce::File& folder, te::TimePosit
         edit.getUndoManager().beginNewTransaction ("Import " + b.name);
         auto* proj = safeThis->project.get();
         auto r = SomewhereBeat::build (edit, b, local, start, safeThis->getLastNonReturnTrack(),
-                                       [proj] (const juce::File& f) { return proj->importAudioFile (f); });
+                                       [proj, sounds = b.name + " Sounds"] (const juce::File& f) { return proj->importAudioFile (f, sounds); });
 
         if (auto* focus = r.drums != nullptr ? r.drums : r.keys != nullptr ? r.keys : r.stems.getFirst())
             safeThis->viewState->focusTrack (focus);

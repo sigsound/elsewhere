@@ -34,6 +34,7 @@
 #include "PerfTest.h"
 #include "RecordTests.h"
 #include "Showcase.h"
+#include "SomewhereBeat.h"
 #include "devices/SomewhereControlDevice.h"
 
 namespace elsewhere
@@ -54,6 +55,152 @@ public:
 };
 
 //==============================================================================
+namespace ReleaseShots
+{
+    /** A beat folder as Somewhere exports it: four bars at 92 BPM, drums on three pads (made here),
+        chords on Haze and a line on Poly, and the stems. For the release screenshots. */
+    inline juce::File writeDemoBeat (const juce::File& parent)
+    {
+        constexpr double rate = 44100.0, bpm = 92.0;
+        constexpr int steps = 64;
+        const double stepSeconds = 60.0 / bpm / 4.0;
+        const int length = (int) (steps * stepSeconds * rate) + (int) rate;
+
+        auto folder = parent.getChildFile ("Beats/2026-11-27 10.30.00 Sunday Beat 92bpm");
+        folder.deleteRecursively();
+        folder.getChildFile ("Sounds").createDirectory();
+
+        auto writeWav = [] (const juce::File& f, const juce::AudioBuffer<float>& b)
+        {
+            f.deleteFile();
+            juce::WavAudioFormat wav;
+            std::unique_ptr<juce::OutputStream> out (f.createOutputStream().release());
+            if (auto w = std::unique_ptr<juce::AudioFormatWriter> (wav.createWriterFor (out.get(), rate, 1, 16, {}, 0)))
+            {
+                out.release();
+                w->writeFromAudioSampleBuffer (b, 0, b.getNumSamples());
+            }
+        };
+
+        // The one-shots
+        juce::Random rng (7);
+        auto shot = [&] (int which)
+        {
+            juce::AudioBuffer<float> b (1, (int) (rate * 0.5));
+            float phase = 0.0f, last = 0.0f;
+            for (int i = 0; i < b.getNumSamples(); ++i)
+            {
+                const float t = (float) i / (float) rate;
+                float v = 0.0f;
+                if (which == 0)
+                {
+                    phase += juce::MathConstants<float>::twoPi * (45.0f + 75.0f * std::exp (-t * 30.0f)) / (float) rate;
+                    v = 0.9f * std::sin (phase) * std::exp (-t * 7.0f);
+                }
+                else if (which == 1)
+                {
+                    phase += juce::MathConstants<float>::twoPi * 185.0f / (float) rate;
+                    v = (0.5f * (rng.nextFloat() * 2.0f - 1.0f) + 0.4f * std::sin (phase) * std::exp (-t * 25.0f)) * std::exp (-t * 14.0f);
+                }
+                else
+                {
+                    const float n = rng.nextFloat() * 2.0f - 1.0f;
+                    v = 0.5f * (n - last) * std::exp (-t * 60.0f);
+                    last = n;
+                }
+                b.setSample (0, i, v);
+            }
+            return b;
+        };
+
+        const char* names[] = { "Kick", "Snare", "Hat" };
+        std::vector<std::vector<std::pair<int, int>>> hits (3);     // step, velocity
+        for (int bar = 0; bar < 4; ++bar)
+        {
+            for (int st : { 0, 7, 10 })   hits[0].push_back ({ bar * 16 + st, st == 0 ? 120 : 96 });
+            for (int st : { 4, 12 })      hits[1].push_back ({ bar * 16 + st, 110 });
+            for (int st = 0; st < 16; st += 2) hits[2].push_back ({ bar * 16 + st, st % 4 == 0 ? 100 : 70 });
+        }
+        if (! hits[1].empty()) hits[1].push_back ({ 63, 80 });
+
+        juce::MidiMessageSequence drums;
+        for (int pad = 0; pad < 3; ++pad)
+        {
+            auto one = shot (pad);
+            writeWav (folder.getChildFile ("Sounds/0" + juce::String (pad + 1) + " " + names[pad] + ".wav"), one);
+
+            juce::AudioBuffer<float> stem (1, length);
+            stem.clear();
+            for (auto [st, vel] : hits[(size_t) pad])
+            {
+                const int at = (int) (st * stepSeconds * rate);
+                stem.addFrom (0, at, one, 0, 0, juce::jmin (one.getNumSamples(), length - at), (float) vel / 127.0f);
+                drums.addEvent (juce::MidiMessage::noteOn (10, 36 + pad, (juce::uint8) vel), st * 24);
+                drums.addEvent (juce::MidiMessage::noteOff (10, 36 + pad), st * 24 + 12);
+            }
+            writeWav (folder.getChildFile ("0" + juce::String (pad + 1) + " " + names[pad] + ".wav"), stem);
+        }
+
+        auto writeMidi = [] (const juce::File& f, juce::MidiMessageSequence seq)
+        {
+            seq.updateMatchedPairs();
+            juce::MidiFile mf;
+            mf.setTicksPerQuarterNote (96);
+            mf.addTrack (seq);
+            f.deleteFile();
+            juce::FileOutputStream out (f);
+            mf.writeTo (out);
+        };
+        writeMidi (folder.getChildFile ("Beat.mid"), drums);
+
+        // Chords on Haze, a line on Poly
+        const std::vector<std::vector<int>> chords = { { 57, 60, 64, 67 }, { 53, 57, 60, 64 }, { 48, 55, 60, 64 }, { 55, 59, 62, 67 } };
+        const std::vector<int> line = { 69, 72, 76, 74, 72, 69, 67, 64, 65, 69, 72, 69, 67, 64, 62, 64,
+                                        64, 67, 72, 71, 67, 64, 62, 60, 62, 67, 71, 74, 71, 67, 62, 59 };
+        juce::MidiMessageSequence haze, poly, all;
+        for (int bar = 0; bar < 4; ++bar)
+            for (int n : chords[(size_t) bar])
+            {
+                haze.addEvent (juce::MidiMessage::noteOn (1, n, (juce::uint8) 84), bar * 384);
+                haze.addEvent (juce::MidiMessage::noteOff (1, n), bar * 384 + 372);
+            }
+        for (size_t i = 0; i < line.size(); ++i)
+        {
+            poly.addEvent (juce::MidiMessage::noteOn (1, line[i], (juce::uint8) (i % 2 == 0 ? 100 : 76)), (int) i * 48);
+            poly.addEvent (juce::MidiMessage::noteOff (1, line[i]), (int) i * 48 + 36);
+        }
+        all.addSequence (haze, 0); all.addSequence (poly, 0);
+        writeMidi (folder.getChildFile ("Keys 17.mid"), haze);
+        writeMidi (folder.getChildFile ("Keys 18.mid"), poly);
+        writeMidi (folder.getChildFile ("Keys.mid"), all);
+
+        // The keys' stem: the chords as soft sines, so the stem track has a shape
+        {
+            juce::AudioBuffer<float> stem (1, length);
+            stem.clear();
+            for (int bar = 0; bar < 4; ++bar)
+                for (int n : chords[(size_t) bar])
+                {
+                    const double hz = 440.0 * std::pow (2.0, (n - 69) / 12.0);
+                    const int at = (int) (bar * 16 * stepSeconds * rate), len = (int) (16 * stepSeconds * rate);
+                    for (int i = 0; i < len && at + i < length; ++i)
+                    {
+                        const float env = juce::jmin (1.0f, (float) i / 2000.0f) * std::exp (-(float) i / (float) rate * 1.2f);
+                        stem.addSample (0, at + i, 0.12f * env * (float) std::sin (juce::MathConstants<double>::twoPi * hz * i / rate));
+                    }
+                }
+            writeWav (folder.getChildFile ("17 Keys Haze Pastel Mall.wav"), stem);
+        }
+
+        folder.getChildFile ("beat.somewhere.json").replaceWithText (R"j({"app":"Somewhere","format":1,"bpm":92,"swing":0,"patterns":[1,1,1,1],"steps":64,"sender":"Somewhere",
+  "keysSound":"Haze Pastel Mall","keysPad":17,"keysPads":[17,18],
+  "keysSynth":{"pad":17,"synth":"Haze","patch":1,"patchName":"Pastel Mall"},
+  "keysSynths":[{"pad":17,"synth":"Haze","patch":1,"patchName":"Pastel Mall"},{"pad":18,"synth":"Poly","patch":0}],
+  "sounds":[{"pad":1,"name":"Kick","file":"Sounds/01 Kick.wav"},{"pad":2,"name":"Snare","file":"Sounds/02 Snare.wav"},{"pad":3,"name":"Hat","file":"Sounds/03 Hat.wav"}]})j");
+        return folder;
+    }
+}
+
 class ElsewhereApplication : public juce::JUCEApplication,
                           public AppActions,
                           private juce::MenuBarModel,
@@ -1388,11 +1535,57 @@ private:
         juce::Timer::callAfterDelay (1200, [this, save, dir]
         {
             save ("somewhere-control");
+            mainComponent->getProject().save (false);
+            takeBeatShot (dir, save);
+        });
+    }
+
+    /** A beat from Somewhere imported into a new song, then the album. */
+    void takeBeatShot (juce::File dir, std::function<void (const juce::String&)> save)
+    {
+        auto songFolder = mainComponent->getProject().getFolder();
+        auto songFile = mainComponent->getProject().getEditFile();
+        auto beatFile = Project::createProjectFolder (dir.getChildFile ("beat"), "Sunday Beat");
+        loadProjectNow (beatFile, false);
+        auto* mc = mainComponent;
+        auto& p = mc->getProject();
+        for (auto* t : te::getAudioTracks (p.getEdit()))      // the new song's empty tracks
+            if (t->getClips().isEmpty())
+                p.getEdit().deleteTrack (t);
+        auto beatFolder = ReleaseShots::writeDemoBeat (dir.getChildFile ("phone"));
+        if (auto beat = SomewhereBeat::read (beatFolder))
+        {
+            juce::Array<juce::File> stems;
+            for (auto& st : beat->stems) stems.add (p.importAudioFile (st.file));
+            auto r = SomewhereBeat::build (p.getEdit(), *beat, stems, {}, nullptr, [&p, sounds = beat->name + " Sounds"] (const juce::File& f) { return p.importAudioFile (f, sounds); });
+            auto& vs = mc->getViewState();
+            vs.selectionManager.deselectAll();
+            if (r.drums != nullptr) vs.focusTrack (r.drums);
+            vs.detailMode = EditViewState::DetailMode::devices;
+            mc->showView (ViewLayout::MainView::arrangement, true);
+            mc->showWholeArrangement();
+            vs.sendChangeMessage();
+        }
+
+        juce::Timer::callAfterDelay (1500, [this, save, dir, songFolder, songFile]
+        {
+            Showcase::clearInputs (mainComponent->getProject().getEdit());
+            mainComponent->getViewState().sendChangeMessage();
+            juce::Timer::callAfterDelay (600, [this, save, dir, songFolder, songFile]
+            {
+            save ("somewhere-beat");
+            mainComponent->getProject().save (false);
+            takeAlbumShot (dir, save, songFolder, songFile);
+            });
+        });
+    }
+
+    /** Three copies of the demo song as an album in a mastering project, once every song has rendered. */
+    void takeAlbumShot (juce::File dir, std::function<void (const juce::String&)> save, juce::File songFolder, juce::File songFile)
+    {
+        {
 
             // Three songs: the demo song under three names, and an album of them
-            auto* m = mainComponent;
-            m->getProject().save (false);
-            auto songFolder = m->getProject().getFolder();
             auto songs = dir.getChildFile ("songs");
             songs.deleteRecursively();
             juce::Array<juce::File> files;
@@ -1400,7 +1593,7 @@ private:
             {
                 auto folder = songs.getChildFile (name);
                 songFolder.copyDirectoryTo (folder);
-                auto from = folder.getChildFile (m->getProject().getEditFile().getFileName());
+                auto from = folder.getChildFile (songFile.getFileName());
                 auto to = folder.getChildFile (juce::String (name) + from.getFileExtension());
                 if (from != to) from.moveFileTo (to);
                 files.add (to);
@@ -1418,7 +1611,7 @@ private:
             // Wait for every song to render, then take the album
             auto tries = std::make_shared<int> (0);
             auto wait = std::make_shared<std::function<void()>>();
-            *wait = [this, save, tries, wait]
+            *wait = [save, tries, wait, this]
             {
                 auto* mm = mainComponent;
                 bool done = mm != nullptr;
@@ -1434,7 +1627,7 @@ private:
                 juce::Timer::callAfterDelay (1000, [wait] { (*wait)(); });
             };
             juce::Timer::callAfterDelay (1000, [wait] { (*wait)(); });
-        });
+        }
     }
 
     /** <dir>/device_<type>.png (and _light) for each built-in device as the chain shows it, at the
