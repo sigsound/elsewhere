@@ -19,8 +19,12 @@ namespace elsewhere
             17 Keys Piano.wav               the keys, played by their pad's sound (when there are notes)
             Beat.mid                        the drum steps: pad 1 = C1 (36), soft and hard velocities
             Keys.mid                        the keys as ordinary notes (when there are notes)
+            Keys 03.mid ...                 with keys in more than one sound: the notes each one plays,
+                                            numbered by its pad
             Sounds/01 Kick.wav ...          each sound the beat plays (a one-shot), bounced with its pad's settings
-            beat.somewhere.json             tempo, swing, patterns, keysSound, keysPad, and "sounds":
+            beat.somewhere.json             tempo, swing, patterns, keysSound, keysPad (the sound most
+                                            keys play), keysPads (every one, when there's more than one),
+                                            and "sounds":
                                             [{ pad (1-based), name, file (relative to the folder) }]
 
     Beats sent before Sounds/ was added have no one-shots of their own: then a pad's sound is
@@ -31,7 +35,8 @@ namespace elsewhere
       - a drum track playing Beat.mid through Elsewhere Drums, each pad loaded with its sound,
         so the beat can be edited as MIDI;
       - a MIDI track playing Keys.mid through a Sampler loaded with the keys' sound (pitched
-        from C4, as on the phone);
+        from C4, as on the phone); keys in several sounds get a track per sound, from its own
+        MIDI file, and play from their stem when there are no such files;
       - an audio track per stem, exactly as exported.
     The MIDI tracks play when every sound they need was found; then the stems are muted.
     Otherwise the stems play and the MIDI track is muted, so the beat never plays twice.
@@ -52,7 +57,9 @@ namespace SomewhereBeat
     {
         juce::File folder;
         juce::String name, keysSound;
-        int keysPad = -1;           // 0-15: the pad whose sound plays the keys
+        int keysPad = -1;           // 0-15: the pad whose sound plays the keys (most of them)
+        std::vector<int> keysPads;  // 0-15: every sound the keys play, when there's more than one
+        std::map<int, juce::File> keysMidiBySound;  // pad -> "Keys NN.mid", the notes in that sound
         std::map<int, juce::File> sounds;   // pad (0-15) -> its one-shot, from "sounds"
         double bpm = 0.0;
         int steps = 0;              // sixteenths
@@ -105,6 +112,15 @@ namespace SomewhereBeat
         b.steps = (int) info["steps"];
         b.keysSound = info["keysSound"].toString();
         b.keysPad = info.hasProperty ("keysPad") ? (int) info["keysPad"] - 1 : -1;
+
+        if (auto* pads = info["keysPads"].getArray())
+            for (auto& v : *pads)
+                if (auto pad = (int) v - 1; pad >= 0 && pad < DrumsDevice::numPads && std::find (b.keysPads.begin(), b.keysPads.end(), pad) == b.keysPads.end())
+                {
+                    b.keysPads.push_back (pad);
+                    if (auto m = folder.getChildFile ("Keys " + juce::String (pad + 1).paddedLeft ('0', 2) + ".mid"); m.existsAsFile())
+                        b.keysMidiBySound[pad] = m;
+                }
 
         if (auto* list = info["sounds"].getArray())
             for (auto& e : *list)
@@ -218,7 +234,9 @@ namespace SomewhereBeat
         te::AudioTrack* drums = nullptr;
         te::AudioTrack* keys = nullptr;
         juce::Array<te::AudioTrack*> stems;
+        juce::Array<te::AudioTrack*> keysBySound;   // with keys in several sounds: a track for each
         juce::StringArray missing;      // sounds that weren't found
+        bool mixedKeys = false;         // keys in several sounds with no file per sound: they play from their stem
         double songBpm = 0.0;           // set when the song kept a tempo other than the beat's
         bool drumsPlay = false, keysPlay = false;
     };
@@ -337,35 +355,85 @@ namespace SomewhereBeat
             }
         }
 
-        if (beat.keysMidi.existsAsFile())
+        // A MIDI track playing a file through a Sampler with one sound; false when the sound isn't found
+        auto addKeys = [&] (const juce::File& midi, int pad, const juce::String& sound, const juce::String& trackName) -> std::pair<te::AudioTrack*, bool>
         {
-            if ((r.keys = detail::newTrack (edit, after, "Keys (" + beat.name + ")")) != nullptr)
+            auto* track = detail::newTrack (edit, after, trackName);
+            bool plays = false;
+
+            if (track == nullptr)
+                return { nullptr, false };
+
+            after = track;
+
+            if (auto p = EngineHelpers::insertBuiltInPlugin (*track, te::SamplerPlugin::xmlTypeName, 0))
             {
-                after = r.keys;
-
-                if (auto p = EngineHelpers::insertBuiltInPlugin (*r.keys, te::SamplerPlugin::xmlTypeName, 0))
+                if (auto* sampler = dynamic_cast<te::SamplerPlugin*> (p.get()))
                 {
-                    if (auto* sampler = dynamic_cast<te::SamplerPlugin*> (p.get()))
+                    if (auto f = soundFor (beat, pad, sound); f.existsAsFile())
                     {
-                        if (auto f = soundFor (beat, beat.keysPad, beat.keysSound); f.existsAsFile())
-                        {
-                            auto local = copy ? copy (f) : f;
+                        auto local = copy ? copy (f) : f;
 
-                            if (sampler->addSound (detail::pathFor (edit, local), beat.keysSound, 0.0, 0.0, 0.0f).isEmpty())
-                            {
-                                sampler->setSoundParams (sampler->getNumSounds() - 1, 60, 0, 127);
-                                r.keysPlay = true;
-                            }
-                        }
-                        else
+                        if (sampler->addSound (detail::pathFor (edit, local), sound, 0.0, 0.0, 0.0f).isEmpty())
                         {
-                            r.missing.add (beat.keysSound.isNotEmpty() ? beat.keysSound : juce::String ("the keys' sound"));
+                            sampler->setSoundParams (sampler->getNumSounds() - 1, 60, 0, 127);
+                            plays = true;
                         }
                     }
+                    else
+                    {
+                        r.missing.add (sound.isNotEmpty() ? sound : juce::String ("the keys' sound"));
+                    }
+                }
+            }
+
+            if (auto* mc = detail::addMidi (*track, midi, start))
+                detail::lastWholeBeat (*mc, beat.steps);
+
+            return { track, plays };
+        };
+
+        // A sound's name, from its one-shot ("03 Marimba.wav")
+        auto soundName = [&beat] (int pad)
+        {
+            if (pad == beat.keysPad && beat.keysSound.isNotEmpty())
+                return beat.keysSound;
+
+            if (auto f = soundInBeat (beat, pad, {}); f.existsAsFile())
+                return f.getFileNameWithoutExtension().fromFirstOccurrenceOf (" ", false, false);
+
+            return "Sound " + juce::String (pad + 1);
+        };
+
+        if (beat.keysMidi.existsAsFile())
+        {
+            const bool split = beat.keysPads.size() > 1 && beat.keysMidiBySound.size() == beat.keysPads.size();
+
+            if (split)
+            {
+                r.keysPlay = true;
+
+                for (auto pad : beat.keysPads)
+                {
+                    auto name = soundName (pad);
+                    auto [track, plays] = addKeys (beat.keysMidiBySound.at (pad), pad, name, "Keys " + name + " (" + beat.name + ")");
+
+                    if (track != nullptr)
+                        r.keysBySound.add (track);
+
+                    r.keysPlay = r.keysPlay && plays && track != nullptr;
                 }
 
-                if (auto* mc = detail::addMidi (*r.keys, beat.keysMidi, start))
-                    detail::lastWholeBeat (*mc, beat.steps);
+                r.keys = r.keysBySound.getFirst();
+            }
+            else
+            {
+                auto [track, plays] = addKeys (beat.keysMidi, beat.keysPad, beat.keysSound, "Keys (" + beat.name + ")");
+                r.keys = track;
+
+                // One sampler can't play notes in several sounds: the stem has them right
+                r.mixedKeys = beat.keysPads.size() > 1;
+                r.keysPlay = plays && ! r.mixedKeys;
             }
         }
 
@@ -400,6 +468,7 @@ namespace SomewhereBeat
 
         if (r.drums != nullptr) r.drums->setMute (! r.drumsPlay && ! r.stems.isEmpty());
         if (r.keys != nullptr)  r.keys->setMute (! r.keysPlay && ! r.stems.isEmpty());
+        for (auto* t : r.keysBySound)  t->setMute (! r.keysPlay && ! r.stems.isEmpty());
         return r;
     }
 }

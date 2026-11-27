@@ -392,6 +392,55 @@ int run (te::Engine& engine, const juce::File& outDir)
             log.check (r.keysPlay && r.keys != nullptr && ! r.keys->isMuted (false) && r.stems[2]->isMuted (false), "the keys play as MIDI and their stem is muted");
         }
 
+        // Keys in two sounds (pads 3 and 5): a track per sound from its own file, else the stem
+        {
+            auto mixed = sender.getChildFile ("Beats/2026-11-26 11.00.00 Beat P2 100bpm");
+            writeSine (mixed.getChildFile ("17 Keys Piano.wav"));
+            writeMidi (mixed.getChildFile ("Keys.mid"), 1, { { 60, 80 }, { 72, 80 } });
+            writeSine (mixed.getChildFile ("Sounds/03 Piano.wav"));
+            writeSine (mixed.getChildFile ("Sounds/05 Marimba.wav"));
+            mixed.getChildFile (SomewhereBeat::infoFileName)
+                 .replaceWithText (R"j({"app":"Somewhere","format":1,"bpm":100,"swing":0,"patterns":[1],"steps":16,"sender":"Nick (a1b2)",
+                                       "keysSound":"Piano","keysPad":3,"keysPads":[3,5],
+                                       "sounds":[{"pad":3,"name":"Piano","file":"Sounds/03 Piano.wav"},{"pad":5,"name":"Marimba","file":"Sounds/05 Marimba.wav"}]})j");
+
+            auto importMixed = [&] (const juce::String& song)
+            {
+                auto b = SomewhereBeat::read (mixed);
+                auto file = Project::createProjectFolder (outDir.getChildFile ("Beats"), song);
+                auto p = std::make_unique<Project> (engine, file);
+                juce::Array<juce::File> stems;
+                for (auto& s : b->stems) stems.add (p->importAudioFile (s.file));
+                auto r = SomewhereBeat::build (p->getEdit(), *b, stems, {}, nullptr, [&p] (const juce::File& f) { return p->importAudioFile (f); });
+                return std::make_pair (std::move (p), r);
+            };
+
+            {
+                auto [p, r] = importMixed ("Mixed Keys");
+                log.check (r.mixedKeys && ! r.keysPlay && r.keys != nullptr && r.keys->isMuted (false)
+                           && ! r.stems.isEmpty() && ! r.stems.getLast()->isMuted (false), "keys in two sounds with one file: the stem plays, the Keys track is muted");
+            }
+
+            writeMidi (mixed.getChildFile ("Keys 03.mid"), 1, { { 60, 80 } });
+            writeMidi (mixed.getChildFile ("Keys 05.mid"), 1, { { 72, 80 } });
+
+            {
+                auto [p, r] = importMixed ("Split Keys");
+                juce::StringArray sounds;
+                for (auto* t : r.keysBySound)
+                    if (auto* sm = t->pluginList.findFirstPluginOfType<te::SamplerPlugin>())
+                    {
+                        sm->flushPendingUpdates();
+                        sounds.add (sm->getSoundFile (0).getFile().getFileNameWithoutExtension());
+                    }
+                log.check (r.keysBySound.size() == 2 && r.keysPlay && ! r.mixedKeys && r.stems.getLast()->isMuted (false)
+                           && sounds.joinIntoString ("|").contains ("Piano") && sounds.joinIntoString ("|").contains ("Marimba")
+                           && ! r.keysBySound[0]->isMuted (false) && ! r.keysBySound[1]->isMuted (false),
+                           "with a file per sound: a Keys track for each sound (" + sounds.joinIntoString (", ") + "), the stem muted");
+                log.check (r.keysBySound.size() == 2 && r.keysBySound[1]->getName().contains ("Marimba"), "each named for its sound");
+            }
+        }
+
         writeSound (sender, "Snare", 2);
 
         if (beat)

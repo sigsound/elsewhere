@@ -604,6 +604,10 @@ void MainComponent::importSomewhereBeat (const juce::File& folder, te::TimePosit
             message << "The beat is " << bpmText (b.bpm) << " bpm and this song " << bpmText (r.songBpm) << " bpm. Its MIDI tracks follow the song's tempo, "
                        "but its stems play as recorded, so they only line up once the song is at " << bpmText (b.bpm) << " bpm.\n\n";
 
+        if (r.mixedKeys)
+            message << "The keys play more than one sound, so they play from their stem. Their notes are on the muted Keys track; "
+                       "export the beat again from an up-to-date Somewhere to get a track for each sound.\n\n";
+
         if (! r.missing.isEmpty())
             message << "These sounds didn't come with the beat, so it plays from its stems for now:\n" << r.missing.joinIntoString ("\n")
                     << "\n\nExport the beat again from an up-to-date Somewhere to edit it as MIDI.";
