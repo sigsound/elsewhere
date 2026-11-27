@@ -3,20 +3,45 @@
 
 #pragma once
 
-#include <JuceHeader.h>
+#include "DspMath.h"
 #include <array>
+#include <atomic>
 #include <cmath>
+#include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace elsewhere
 {
 //==============================================================================
 /**
-    Building blocks shared by Elsewhere's synths (Mono, Poly, Modular): plain C++ DSP,
-    no framework types beyond juce::Random, so they're easy to test on their own.
+    Building blocks shared by Elsewhere's synths (Mono, Poly, Modular, Haze): plain C++ DSP
+    that needs nothing of JUCE beyond jlimit, jmin, jmax and MathConstants, so it also builds
+    outside it.
 */
 namespace SynthCore
 {
+    /** A repeatable random sequence: the same numbers from the same seed as juce::Random. */
+    struct Random
+    {
+        std::int64_t seed = 1;
+
+        Random (std::int64_t s = 1) noexcept : seed (s) {}
+        void setSeed (std::int64_t s) noexcept     { seed = s; }
+
+        int nextInt() noexcept
+        {
+            seed = (std::int64_t) ((((std::uint64_t) seed) * 0x5deece66dULL + 11) & 0xffffffffffffULL);
+            return (int) (seed >> 16);
+        }
+
+        float nextFloat() noexcept
+        {
+            const auto result = (float) (std::uint32_t) nextInt() / ((float) std::numeric_limits<std::uint32_t>::max() + 1.0f);
+            return std::min (result, 1.0f - std::numeric_limits<float>::epsilon());
+        }
+    };
+
     constexpr float twoPi = 6.283185307179586f;
 
     /** PolyBLEP: removes the step discontinuity's aliasing (t = phase, dt = phase increment). */
@@ -48,7 +73,7 @@ namespace SynthCore
         /** One sample. `dt` = frequency / sampleRate. */
         float process (Wave w, float dt) noexcept
         {
-            dt = juce::jlimit (1.0e-7f, 0.45f, dt);
+            dt = dspmath::jlimit (1.0e-7f, 0.45f, dt);
             const float t = phase;
             float y = 0.0f;
 
@@ -86,8 +111,8 @@ namespace SynthCore
         /** Pulse with any width (0..1), band-limited and DC-free. */
         float pulse (float width, float dt) noexcept
         {
-            dt = juce::jlimit (1.0e-7f, 0.45f, dt);
-            width = juce::jlimit (0.03f, 0.97f, width);
+            dt = dspmath::jlimit (1.0e-7f, 0.45f, dt);
+            width = dspmath::jlimit (0.03f, 0.97f, width);
             const float t = phase;
             float t2 = t + (1.0f - width); if (t2 >= 1.0f) t2 -= 1.0f;
             const float y = (t < width ? 1.0f : -1.0f) + polyBlep (t, dt) - polyBlep (t2, dt) + (1.0f - 2.0f * width);
@@ -98,19 +123,19 @@ namespace SynthCore
 
         // Reading waveforms at the current phase without moving on (several shapes from one
         // phase, like a DCO), then advance() once per sample
-        float sawAt (float dt) const noexcept       { return 2.0f * phase - 1.0f - polyBlep (phase, juce::jlimit (1.0e-7f, 0.45f, dt)); }
+        float sawAt (float dt) const noexcept       { return 2.0f * phase - 1.0f - polyBlep (phase, dspmath::jlimit (1.0e-7f, 0.45f, dt)); }
 
         float pulseAt (float width, float dt) const noexcept
         {
-            dt = juce::jlimit (1.0e-7f, 0.45f, dt);
-            width = juce::jlimit (0.03f, 0.97f, width);
+            dt = dspmath::jlimit (1.0e-7f, 0.45f, dt);
+            width = dspmath::jlimit (0.03f, 0.97f, width);
             float t2 = phase + (1.0f - width); if (t2 >= 1.0f) t2 -= 1.0f;
             return (phase < width ? 1.0f : -1.0f) + polyBlep (phase, dt) - polyBlep (t2, dt) + (1.0f - 2.0f * width);
         }
 
         float triAt (float dt) const noexcept
         {
-            dt = juce::jlimit (1.0e-7f, 0.45f, dt);
+            dt = dspmath::jlimit (1.0e-7f, 0.45f, dt);
             float v = phase < 0.5f ? 4.0f * phase - 1.0f : 3.0f - 4.0f * phase;
             float t2 = phase + 0.5f; if (t2 >= 1.0f) t2 -= 1.0f;
             return v + 4.0f * dt * (polyBlamp (phase, dt) - polyBlamp (t2, dt));
@@ -119,7 +144,7 @@ namespace SynthCore
         /** Moves on one sample; returns true if the phase wrapped. */
         bool advance (float dt) noexcept
         {
-            phase += juce::jlimit (1.0e-7f, 0.45f, dt);
+            phase += dspmath::jlimit (1.0e-7f, 0.45f, dt);
             if (phase >= 1.0f) { phase -= 1.0f; return true; }
             return false;
         }
@@ -146,12 +171,12 @@ namespace SynthCore
         /** cutoff in Hz, resonance 0..1 (1 = self-oscillation), at the processing rate. */
         void set (float cutoff, float resonance, float rate) noexcept
         {
-            const float fc = juce::jlimit (10.0f, rate * 0.42f, cutoff);
+            const float fc = dspmath::jlimit (10.0f, rate * 0.42f, cutoff);
             // Frequency warping correction so the cutoff stays in tune up high
             const float x = fc / rate;
             g = 1.0f - std::exp (-twoPi * x * (1.0f + 0.9f * x));
             // Self-oscillation needs a loop gain of 4 with four poles, 8 with three
-            k = (poles == 3 ? 8.4f : 4.7f) * juce::jlimit (0.0f, 1.05f, resonance);
+            k = (poles == 3 ? 8.4f : 4.7f) * dspmath::jlimit (0.0f, 1.05f, resonance);
             comp = 1.0f + 0.45f * k;   // gives back some of the bass that resonance takes (not all: that's the sound)
         }
 
@@ -198,9 +223,9 @@ namespace SynthCore
         /** cutoff in Hz, resonance 0..1 (self-oscillates from about 0.96), at the processing rate. */
         void set (float cutoff, float resonance, float rate) noexcept
         {
-            const float fc = juce::jlimit (10.0f, rate * 0.45f, cutoff);
-            f = std::tan (juce::MathConstants<float>::pi * fc / rate);
-            r = 4.25f * juce::jlimit (0.0f, 1.03f, resonance);
+            const float fc = dspmath::jlimit (10.0f, rate * 0.45f, cutoff);
+            f = std::tan (dspmath::MathConstants<float>::pi * fc / rate);
+            r = 4.25f * dspmath::jlimit (0.0f, 1.03f, resonance);
             comp = 1.0f + 0.55f * r;
         }
 
@@ -246,7 +271,7 @@ namespace SynthCore
     struct DcBlock
     {
         float x1 = 0.0f, y1 = 0.0f, R = 0.999f;
-        void set (float hz, float rate) noexcept    { R = std::exp (-juce::MathConstants<float>::twoPi * hz / rate); }
+        void set (float hz, float rate) noexcept    { R = std::exp (-dspmath::MathConstants<float>::twoPi * hz / rate); }
         void reset()                                { x1 = y1 = 0.0f; }
         float process (float x) noexcept            { const float y = x - x1 + R * y1; x1 = x; y1 = y; return y; }
     };
@@ -263,8 +288,8 @@ namespace SynthCore
         /** resonance 0..1 (near 1 rings strongly). */
         void set (float cutoff, float resonance, float rate) noexcept
         {
-            g = std::tan (juce::MathConstants<float>::pi * juce::jlimit (10.0f, rate * 0.45f, cutoff) / rate);
-            k = 2.0f - 1.94f * juce::jlimit (0.0f, 1.0f, resonance);
+            g = std::tan (dspmath::MathConstants<float>::pi * dspmath::jlimit (10.0f, rate * 0.45f, cutoff) / rate);
+            k = 2.0f - 1.94f * dspmath::jlimit (0.0f, 1.0f, resonance);
             a1 = 1.0f / (1.0f + g * (g + k));
             a2 = g * a1;
             a3 = g * a2;
@@ -360,7 +385,7 @@ namespace SynthCore
 
         float process (float attack, float decay, float sustain, float release, float rate) noexcept
         {
-            auto coeff = [rate] (float t) { return 1.0f - std::exp (-1.0f / (juce::jmax (0.0005f, t) * rate)); };
+            auto coeff = [rate] (float t) { return 1.0f - std::exp (-1.0f / (dspmath::jmax (0.0005f, t) * rate)); };
 
             switch (stage)
             {
@@ -386,7 +411,7 @@ namespace SynthCore
     /** Slow random pitch wander (analog drift), in semitones. Call once per sample. */
     struct Drift
     {
-        juce::Random rng;
+        Random rng;
         float value = 0.0f, target = 0.0f, smooth = 0.0f;
         int counter = 0;
 
@@ -408,7 +433,7 @@ namespace SynthCore
     /** White or pink noise (pink: Paul Kellet's economy filter). */
     struct Noise
     {
-        juce::Random rng { 1234 };
+        Random rng { 1234 };
         float b0 = 0, b1 = 0, b2 = 0;
 
         float white() noexcept      { return rng.nextFloat() * 2.0f - 1.0f; }

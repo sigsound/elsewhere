@@ -23,6 +23,9 @@ namespace elsewhere
     are darker; each pad has tone and drive; the kit has a room (Space) and Crush.
 
     The closed hi-hat chokes the open hi-hat, like a real kit.
+
+    Plain velocity (the "plainVelocity" property, set for beats imported from Somewhere):
+    a hit's level is simply its velocity, with no darkening, so the pads play as on the phone.
 */
 class DrumsDevice : public ElsewhereDevice,
                     private juce::AsyncUpdater
@@ -86,6 +89,8 @@ public:
 
         for (int i = 0; i < numPads; ++i)
             loadPadSound (i);
+
+        plainVelocity = (bool) state.getProperty (plainVelocityProp, false);
 
         // While a project loads, its file locations aren't known yet: load dropped-in samples
         // again once it has finished opening
@@ -164,6 +169,11 @@ public:
     }
 
     bool padHasUserSample (int pad) const   { return state.getProperty (sampleProp (pad)).toString().isNotEmpty(); }
+
+    static inline const juce::Identifier plainVelocityProp { "plainVelocity" };
+
+    bool hasPlainVelocity() const           { return plainVelocity.load(); }
+    void setPlainVelocity (bool on)         { state.setProperty (plainVelocityProp, on, getUndoManager()); }
 
     /** Replaces a pad's sound with an audio file (copied into the project), or restores the built-in one. */
     void setPadSample (int pad, const juce::File& file)
@@ -433,6 +443,7 @@ private:
 
     juce::SpinLock soundLock;
     std::array<DrumSound::Ptr, numPads> sounds, cachedSounds;
+    std::atomic<bool> plainVelocity { false };
 
     static juce::Identifier sampleProp (int pad)   { return juce::Identifier ("sample" + juce::String (pad + 1)); }
 
@@ -463,7 +474,8 @@ private:
 
         auto& p = pads[(size_t) pad];
         auto& snd = *current[(size_t) pad];
-        const float gain = juce::Decibels::decibelsToGain (p.level.get(), -60.0f) * (0.2f + 0.8f * velocity);
+        const bool plain = plainVelocity.load();
+        const float gain = juce::Decibels::decibelsToGain (p.level.get(), -60.0f) * (plain ? velocity : 0.2f + 0.8f * velocity);
         const float pan = p.pan.get();
 
         voice->active = true;
@@ -490,7 +502,7 @@ private:
         // Tone: dark (low-pass) one way, thin (high-pass) the other; softer hits are darker too
         const float tone = p.tone.get() / 100.0f;
         // (recorded kits are darker at low velocity already: they were played softer)
-        const float velDark = snd.layers.empty() ? juce::square (0.35f + 0.65f * velocity) : 1.0f;
+        const float velDark = snd.layers.empty() && ! plain ? juce::square (0.35f + 0.65f * velocity) : 1.0f;
         const float lpHz = 20000.0f * (tone < 0.0f ? std::pow (2.0f, tone * 7.0f) : 1.0f) * (0.08f + 0.92f * velDark);
         voice->filtered = lpHz < 18000.0f;
         voice->highPassed = tone > 0.01f;
@@ -637,6 +649,9 @@ private:
         for (int i = 0; i < numPads; ++i)
             if (prop == sampleProp (i))
                 loadPadSound (i);
+
+        if (prop == plainVelocityProp)
+            plainVelocity = (bool) state.getProperty (plainVelocityProp, false);
 
         if (prop.toString() == "kit")
             for (int i = 0; i < numPads; ++i)

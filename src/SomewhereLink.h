@@ -8,6 +8,8 @@
 #include "Mixing.h"
 #include "Theme.h"
 #include "RealtimeAudio.h"
+#include "devices/DeviceBase.h"
+#include "devices/SomewhereControlDevice.h"
 
 #if JUCE_MAC
  #include <dns_sd.h>
@@ -50,8 +52,12 @@ namespace elsewhere
       - play the Chaos pad, which moves two controls of the track's Mono / Poly / Modular synth
         and springs them back when the finger lifts,
       - drop a sample, which is saved to Samples/Somewhere/<Phone>/ and placed on the focused track
-        at the playhead.
-    Elsewhere tells the phone which track is focused and keeps its fader in step.
+        at the playhead,
+      - play its FX pad on any track: the track's Somewhere Control device runs the effect on
+        the track's own sound (added at the end of its devices the first time), and only the
+        moves travel over the link.
+    Elsewhere tells the phone which track is focused, and which tracks there are, and keeps its
+    fader in step.
 
     Tempo sync: Elsewhere is the clock. Ten times a second it sends its tempo, whether it's
     playing, and the playhead in beats (plus its output latency), so Somewhere's sequencer can
@@ -599,6 +605,11 @@ private:
         // Chaos pad touch in progress: where the controls were before, to spring back to
         ChaosTargets chaos;
         float chaosStartX = 0, chaosStartY = 0;
+
+        // The track list as last sent, and the Somewhere Control the FX pad is playing
+        juce::String lastTracks;
+        te::Plugin::Ptr fx;
+        bool fxPlaying = false;
     };
 
     //==============================================================================
@@ -683,6 +694,7 @@ private:
         if (auto* c = find (id))
         {
             endChaos (*c);
+            endFx (*c);
             monitor->close (id);
             connections.removeObject (c);
         }
@@ -715,6 +727,7 @@ private:
         else if (type == "pan")     setPan ((float) (double) msg["value"]);
         else if (type == "chaos")   moveChaos (*c, (float) (double) msg["x"], (float) (double) msg["y"], (bool) msg["touching"]);
         else if (type == "drop")    drop (*c, msg["name"].toString(), payload);
+        else if (type == "fx")      playFx (*c, msg);
     }
 
     /** Phones you've allowed. ELSEWHERE_SOMEWHERE_TRUST=<tag> pre-allows one (for scripted tests). */
@@ -740,7 +753,7 @@ private:
         c.send (encode (message ("waiting")));
 
         auto text = c.name + " (" + c.tag + ") wants to connect to Elsewhere from Somewhere.\n\n"
-                    "It will be able to move the selected track's fader and synth controls, and add samples to the project.";
+                    "It will be able to move the selected track's fader and synth controls, play effects on your tracks, and add samples to the project.";
 
         juce::AlertWindow::showOkCancelBox (juce::MessageBoxIconType::QuestionIcon, "Allow this phone?", text, "Allow", "Don't Allow", nullptr,
             juce::ModalCallbackFunction::create ([weak = juce::WeakReference<SomewhereLink> (this), id = c.id] (int result)
@@ -772,7 +785,9 @@ private:
         m.getDynamicObject()->setProperty ("project", project.getName());
         c.send (encode (m));
         c.lastTrackState = {};
+        c.lastTracks = {};
         sendTrackState (c);
+        sendTracks (c);
     }
 
     //==============================================================================
@@ -879,6 +894,7 @@ private:
             if (c->allowed)
             {
                 sendTrackState (*c);
+                sendTracks (*c);
                 sendTransport (*c, transport);
             }
     }
@@ -1047,6 +1063,126 @@ private:
         c.chaos.x->parameterChangeGestureEnd();
         c.chaos.y->parameterChangeGestureEnd();
         c.chaos = {};
+    }
+
+    //==============================================================================
+    /** The tracks the FX pad can play, in the project's order: every audio track. */
+    juce::var trackList()
+    {
+        juce::Array<juce::var> list;
+
+        for (auto* t : te::getAudioTracks (project.getEdit()))
+        {
+            auto* o = new juce::DynamicObject();
+            o->setProperty ("id", t->itemID.toString());
+            o->setProperty ("name", t->getName());
+            o->setProperty ("colour", "#" + Theme::ofTrack (*t).toDisplayString (false));
+            o->setProperty ("fx", SomewhereControlDevice::findOn (*t) != nullptr);
+            list.add (juce::var (o));
+        }
+
+        auto m = message ("tracks");
+        m.getDynamicObject()->setProperty ("tracks", list);
+        return m;
+    }
+
+    void sendTracks (Connection& c)
+    {
+        auto m = trackList();
+        auto json = juce::JSON::toString (m, true);
+
+        if (json == c.lastTracks)
+            return;
+
+        c.lastTracks = json;
+        c.send (encode (m));
+    }
+
+    /** fx { track, effect, x, y, on }: the phone's FX pad playing a track's Somewhere Control.
+        A touch (on, until off) is one undo step, and its moves are one gesture, so AUTO records them. */
+    void playFx (Connection& c, const juce::var& msg)
+    {
+        const auto id = te::EditItemID::fromVar (msg["track"]);
+        te::AudioTrack* track = nullptr;
+
+        for (auto* t : te::getAudioTracks (project.getEdit()))
+            if (t->itemID == id)
+                track = t;
+
+        auto number = [&msg] (const char* key, double lo, double hi, double fallback)
+        {
+            auto v = msg[key];
+            if (! (v.isDouble() || v.isInt() || v.isInt64()))
+                return fallback;
+            auto d = (double) v;
+            return std::isfinite (d) ? juce::jlimit (lo, hi, d) : fallback;
+        };
+
+        const bool on = (bool) msg["on"];
+
+        // A different track (or none) ends what the pad was playing
+        if (c.fx != nullptr && (track == nullptr || SomewhereControlDevice::findOn (*track) != c.fx.get()))
+            endFx (c);
+
+        if (track == nullptr)
+            return;
+
+        auto* d = SomewhereControlDevice::findOn (*track);
+
+        if (d == nullptr && ! on)
+            return;     // nothing to stop, and no reason to add one
+
+        if (! c.fxPlaying)
+            track->edit.getUndoManager().beginNewTransaction ("Somewhere FX");
+
+        if (! c.fxPlaying && on)
+        {
+
+            if (d == nullptr && (d = SomewhereControlDevice::findOrAddTo (*track)) == nullptr)
+                return;
+
+            c.fx = d;
+            c.fxPlaying = true;
+
+            for (auto* p : { &d->effect.param(), &d->x.param(), &d->y.param(), &d->on.param() })
+                p->parameterChangeGestureBegin();
+        }
+
+        auto set = [] (ElsewhereDevice::Param p, float v)
+        {
+            if (p.get() != v)
+                p.param().setParameter (v, juce::sendNotification);
+        };
+
+        set (d->effect, (float) juce::roundToInt (number ("effect", 0, PerformanceFx::numEffects - 1, d->getEffect())));
+        set (d->x, (float) number ("x", 0, 1, d->x.get()));
+        set (d->y, (float) number ("y", 0, 1, d->y.get()));
+        set (d->on, on ? 1.0f : 0.0f);
+        d->remoteName = c.name;
+        d->lastRemoteMove = juce::Time::getCurrentTime();
+
+        if (! on)
+            endFx (c);
+    }
+
+    /** The pad let go (or the phone went, or picked another track): stop the effect. */
+    void endFx (Connection& c)
+    {
+        if (c.fx == nullptr)
+            return;
+
+        if (auto* d = dynamic_cast<SomewhereControlDevice*> (c.fx.get()))
+        {
+            if (d->on.get() > 0.5f)
+                d->on.param().setParameter (0.0f, juce::sendNotification);
+
+            if (c.fxPlaying)
+                for (auto* p : { &d->effect.param(), &d->x.param(), &d->y.param(), &d->on.param() })
+                    p->parameterChangeGestureEnd();
+        }
+
+        c.fx = nullptr;
+        c.fxPlaying = false;
     }
 
     //==============================================================================

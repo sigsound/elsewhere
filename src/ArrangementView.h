@@ -12,6 +12,15 @@
 
 namespace elsewhere
 {
+    /** A beat folder sent from Somewhere (SomewhereBeat.h), which imports as tracks. */
+    inline bool isSomewhereBeat (const juce::String& path)
+    {
+        return juce::File (path).getChildFile ("beat.somewhere.json").existsAsFile();
+    }
+}
+
+namespace elsewhere
+{
 //==============================================================================
 /** Files dragged from the Browser panel carry this description; the file is the tree's selection. */
 inline constexpr const char* browserDragDescription = "elsewhere-file";
@@ -1069,7 +1078,7 @@ public:
             return false;
 
         for (auto& f : files)
-            if (juce::File (f).hasFileExtension (te::soundFileAndMidiExtensions))
+            if (juce::File (f).hasFileExtension (te::soundFileAndMidiExtensions) || isSomewhereBeat (f))
                 return true;
 
         return false;
@@ -1084,7 +1093,7 @@ public:
         auto t = viewState.beatToTime (viewState.snapBeat (viewState.xToBeat ((float) x)));
 
         // Several files at once (e.g. stems) -> one new track each, all lined up
-        if (files.size() > 1 && onFilesDroppedAsNewTracks)
+        if ((files.size() > 1 || isSomewhereBeat (files[0])) && onFilesDroppedAsNewTracks)
             onFilesDroppedAsNewTracks (files, t);
         else if (onFileDropped && ! files.isEmpty())
             onFileDropped (juce::File (files[0]), *track, t);
@@ -1098,7 +1107,8 @@ public:
         if (dynamic_cast<te::AudioTrack*> (track.get()) == nullptr)
             return false;
 
-        return getDraggedFile (d).existsAsFile() || getDraggedClip (track->edit, d) != nullptr;
+        auto f = getDraggedFile (d);
+        return f.existsAsFile() || isSomewhereBeat (f.getFullPathName()) || getDraggedClip (track->edit, d) != nullptr;
     }
 
     void itemDragEnter (const SourceDetails&) override { isDragOver = true; repaint(); }
@@ -1646,7 +1656,7 @@ private:
         bool isInterestedInFileDrag (const juce::StringArray& files) override
         {
             for (auto& f : files)
-                if (juce::File (f).hasFileExtension (te::soundFileAndMidiExtensions))
+                if (juce::File (f).hasFileExtension (te::soundFileAndMidiExtensions) || isSomewhereBeat (f))
                     return true;
             return false;
         }

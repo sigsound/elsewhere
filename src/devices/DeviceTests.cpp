@@ -12,10 +12,12 @@
 #include "ModularDevice.h"
 #include "OrganicDevice.h"
 #include "HazeDevice.h"
+#include "HazeEngine.h"
 #include "MidiEffects.h"
 #include "StepsDevice.h"
 #include "EchoDevice.h"
 #include "ReferenceDevice.h"
+#include "SomewhereControlDevice.h"
 #include "../Modulators.h"
 #include "../SessionRecorder.h"
 #include "../drums/DrumTrack.h"
@@ -2174,6 +2176,7 @@ int run (te::Engine& engine, const juce::File& outDir)
             process (hz, b, midi);
             return b;
         };
+
         auto pitchOf = [] (const juce::AudioBuffer<float>& b, double fromSec, int w = 4096)
         {
             const int start = (int) (fromSec * sr);
@@ -2363,6 +2366,72 @@ int run (te::Engine& engine, const juce::File& outDir)
         snapshot (hz, outDir.getChildFile ("haze-light.png"));
         Theme::apply (Themes::dark); refreshLookAndFeel();
         reset();
+
+        // The device is HazeEngine: the same notes through the engine on its own come out the
+        // same, sample for sample (glitches, hiss, mod wheel and bend included)
+        {
+            hz.loadPatch (3);                       // Late Broadcast
+            setParam (hz.tracking, 100.0f);
+            setParam (hz.chroma, 3.0f);
+            reset();
+            const int s1 = (int) sr;
+            std::vector<std::pair<int, juce::MidiMessage>> midi = {
+                { 0, on (60) }, { 0, on (64, 70) }, { 4800, on (67, 40) }, { s1, off (60) },
+                { s1 + 9600, juce::MidiMessage::controllerEvent (1, 1, 90) }, { s1 + 24000, off (64) }, { s1 + 24000, off (67) },
+                { s1 + 28800, juce::MidiMessage::pitchWheel (1, 12000) }, { s1 + 33600, on (48, 110) }, { 2 * s1 + 12000, off (48) } };
+            auto viaDevice = play (midi, 4.0);
+            writeWav (outDir.getChildFile ("haze-phrase.wav"), viaDevice);
+
+            HazeEngine e;
+            e.setPatch (3);
+            e.params.tracking = 100.0f;
+            e.params.chroma = 3.0f;
+            e.prepare (sr, block);
+            juce::AudioBuffer<float> viaEngine (2, viaDevice.getNumSamples());
+            viaEngine.clear();
+            auto* L = viaEngine.getWritePointer (0);
+            auto* R = viaEngine.getWritePointer (1);
+
+            // In the same pieces the device renders in: blocks, split at each message
+            for (int start = 0; start < viaEngine.getNumSamples(); start += block)
+            {
+                const int n = juce::jmin (block, viaEngine.getNumSamples() - start);
+                int done = 0;
+                for (auto& [pos, m] : midi)
+                {
+                    if (pos < start || pos >= start + n) continue;
+                    if (pos - start > done) { e.render (L + start + done, R + start + done, pos - start - done); done = pos - start; }
+                    if (m.isNoteOn()) e.noteOn (m.getNoteNumber(), m.getFloatVelocity());
+                    else if (m.isNoteOff()) e.noteOff (m.getNoteNumber());
+                    else if (m.isController()) e.setModWheel ((float) m.getControllerValue() / 127.0f);
+                    else if (m.isPitchWheel()) e.setPitchBend ((float) (m.getPitchWheelValue() - 8192) / 8192.0f);
+                }
+                if (done < n) e.render (L + start + done, R + start + done, n - done);
+            }
+
+            float worst = 0.0f;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < viaDevice.getNumSamples(); ++i)
+                    worst = juce::jmax (worst, std::abs (viaDevice.getSample (ch, i) - viaEngine.getSample (ch, i)));
+            check (r, worst == 0.0f && viaDevice.getMagnitude (0, viaDevice.getNumSamples()) > 0.05f,
+                   "the device plays HazeEngine: the engine on its own renders the same, sample for sample (worst " + juce::String (worst) + ")");
+
+            HazeEngine again;
+            again.setPatch (3); again.params.tracking = 100.0f; again.params.chroma = 3.0f;
+            again.prepare (sr);
+            juce::AudioBuffer<float> b1 (2, s1), b2 (2, s1);
+            b1.clear(); b2.clear();
+            again.noteOn (60, 0.8f); again.render (b1.getWritePointer (0), b1.getWritePointer (1), s1);
+            again.prepare (sr);
+            again.noteOn (60, 0.8f); again.render (b2.getWritePointer (0), b2.getWritePointer (1), s1);
+            bool same = true;
+            for (int i = 0; i < s1; ++i) same = same && b1.getSample (0, i) == b2.getSample (0, i);
+            check (r, same, "prepare() starts it afresh: the same notes render the same audio every time");
+            check (r, HazeEngine::patchCount() == (int) HazeDevice::patches().size() && juce::String (HazeEngine::patchName (1)) == "Pastel Mall",
+                   "the engine has the device's patches");
+            hz.loadPatch (0);
+            reset();        // bend and mod wheel back to rest
+        }
     }
 
     //==============================================================================
@@ -2855,6 +2924,161 @@ int run (te::Engine& engine, const juce::File& outDir)
         snapshot (ref, outDir.getChildFile ("reference.png"));
     }
 
+    r.log << "Somewhere Control\n";
+    {
+        auto& sc = make<SomewhereControlDevice> (*edit, SomewhereControlDevice::xmlTypeName);
+        auto fresh = [&] (int effect, float x, float y)
+        {
+            setParam (sc.effect, (float) effect); setParam (sc.x, x); setParam (sc.y, y);
+            setParam (sc.on, 0.0f); setParam (sc.latch, 0.0f);
+            sc.initialise ({ te::TimePosition(), sr + 1.0, block });   // a new rate starts it afresh
+            sc.initialise ({ te::TimePosition(), sr, block });
+        };
+        auto same = [] (const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b)
+        {
+            for (int ch = 0; ch < a.getNumChannels(); ++ch)
+                for (int i = 0; i < a.getNumSamples(); ++i)
+                    if (a.getSample (ch, i) != b.getSample (ch, i))
+                        return false;
+            return true;
+        };
+        auto rmsDb = [] (const juce::AudioBuffer<float>& b, double from, double to)
+        {
+            auto s0 = (int) (from * sr), s1 = juce::jmin (b.getNumSamples(), (int) (to * sr));
+            return juce::Decibels::gainToDecibels (b.getRMSLevel (0, s0, s1 - s0), -200.0f);
+        };
+
+        check (r, SomewhereControlDevice::effectNames().size() == PerformanceFx::numEffects, "a name for each of the seven effects");
+
+        // Off, a loud sound passes through untouched (not even rounded off near full scale)
+        fresh (PerformanceFx::filter, 0.05f, 0.9f);
+        auto loud = sine (220.0, 0.98f, 1.0), dry = loud;
+        process (sc, loud);
+        check (r, same (loud, dry), "off: the sound passes through untouched");
+
+        // Filter, left: a low-pass that takes out a 5 kHz tone
+        fresh (PerformanceFx::filter, 0.05f, 0.0f);
+        setParam (sc.on, 1.0f);
+        auto high = sine (5000.0, 0.5f, 1.0);
+        process (sc, high);
+        check (r, tailRmsDb (high) < tailRmsDb (sine (5000.0, 0.5f, 1.0)) - 30.0f, "Filter at the left closes a low-pass (" + juce::String (tailRmsDb (high), 1) + " dB)");
+
+        // Filter, right: a high-pass that takes out a 60 Hz tone
+        fresh (PerformanceFx::filter, 0.95f, 0.0f);
+        setParam (sc.on, 1.0f);
+        auto low = sine (60.0, 0.5f, 1.0);
+        process (sc, low);
+        check (r, tailRmsDb (low) < tailRmsDb (sine (60.0, 0.5f, 1.0)) - 30.0f, "Filter at the right opens a high-pass (" + juce::String (tailRmsDb (low), 1) + " dB)");
+
+        // Latch keeps it on with the pad let go
+        fresh (PerformanceFx::filter, 0.05f, 0.0f);
+        setParam (sc.latch, 1.0f);
+        auto latched = sine (5000.0, 0.5f, 1.0);
+        process (sc, latched);
+        check (r, tailRmsDb (latched) < -20.0f, "Latch keeps the effect on");
+
+        // Delay: a click while on comes back in time with the song, and keeps ringing once let go
+        {
+            fresh (PerformanceFx::delay, 0.9f, 0.5f);    // a 1/4 note: at 120 bpm, 500 ms
+            juce::AudioBuffer<float> b (2, (int) (2.0 * sr));
+            b.clear();
+            for (int i = 0; i < 48; ++i) { b.setSample (0, 4800 + i, 0.5f); b.setSample (1, 4800 + i, 0.5f); }
+
+            // On for the first 0.2 s (so the click goes in), then off
+            juce::AudioBuffer<float> first (b.getArrayOfWritePointers(), 2, 0, (int) (0.2 * sr));
+            setParam (sc.on, 1.0f);
+            process (sc, first);
+            setParam (sc.on, 0.0f);
+            juce::AudioBuffer<float> rest (b.getArrayOfWritePointers(), 2, (int) (0.2 * sr), b.getNumSamples() - (int) (0.2 * sr));
+            process (sc, rest, {}, 0.2);
+
+            int echoAt = -1;
+            for (int i = 4800 + 600; i < b.getNumSamples() && echoAt < 0; ++i)
+                if (std::abs (b.getSample (0, i)) > 0.05f || std::abs (b.getSample (1, i)) > 0.05f)
+                    echoAt = i;
+            const auto ms = (echoAt - 4800) / sr * 1000.0;
+            check (r, std::abs (ms - 500.0) < 15.0, "Delay: the echo comes back a 1/4 note later (" + juce::String (ms, 1) + " ms at 120 bpm)");
+            check (r, rmsDb (b, 0.5, 1.0) > -70.0f, "Delay: the tail keeps ringing after the pad is let go");
+
+            // Once the echoes have died away it goes back to leaving the sound untouched
+            setParam (sc.y, 0.0f);
+            auto later = sine (220.0, 0.98f, 4.0), later0 = later;
+            process (sc, later, {}, 2.0);
+            juce::AudioBuffer<float> end (later.getArrayOfWritePointers(), 2, (int) (3.5 * sr), (int) (0.5 * sr));
+            juce::AudioBuffer<float> end0 (later0.getArrayOfWritePointers(), 2, (int) (3.5 * sr), (int) (0.5 * sr));
+            check (r, same (end, end0), "once the echoes have died away the sound passes through untouched again");
+        }
+
+        // Stutter repeats what just played: a tone that stops keeps sounding while it's on
+        {
+            fresh (PerformanceFx::stutter, 0.3f, 0.0f);
+            auto b = sine (440.0, 0.5f, 1.0);
+            for (int i = (int) (0.5 * sr); i < b.getNumSamples(); ++i) { b.setSample (0, i, 0.0f); b.setSample (1, i, 0.0f); }
+            juce::AudioBuffer<float> first (b.getArrayOfWritePointers(), 2, 0, (int) (0.5 * sr));
+            process (sc, first);
+            setParam (sc.on, 1.0f);
+            juce::AudioBuffer<float> rest (b.getArrayOfWritePointers(), 2, (int) (0.5 * sr), (int) (0.5 * sr));
+            process (sc, rest, {}, 0.5);
+            check (r, rmsDb (b, 0.6, 1.0) > -15.0f, "Stutter repeats the slice that just played (" + juce::String (rmsDb (b, 0.6, 1.0), 1) + " dB after the tone stopped)");
+        }
+
+        // Tape stop slows to silence
+        {
+            fresh (PerformanceFx::tapeStop, 0.0f, 0.5f);     // 0.15 s
+            setParam (sc.on, 1.0f);
+            auto b = sine (440.0, 0.5f, 1.0);
+            process (sc, b);
+            check (r, rmsDb (b, 0.5, 1.0) < -60.0f, "Tape Stop slows to a stop (" + juce::String (rmsDb (b, 0.5, 1.0), 1) + " dB)");
+        }
+
+        // Every effect at every corner stays finite and in range, on a mono track too
+        bool stable = true;
+        for (int e = 0; e < PerformanceFx::numEffects; ++e)
+            for (auto [x, y] : { std::pair { 0.0f, 0.0f }, { 1.0f, 1.0f }, { 0.0f, 1.0f }, { 1.0f, 0.0f } })
+            {
+                fresh (e, x, y);
+                setParam (sc.on, 1.0f);
+                auto b = sine (110.0, 0.9f, 0.5);
+                process (sc, b);
+                juce::AudioBuffer<float> mono (1, (int) (0.2 * sr));
+                for (int i = 0; i < mono.getNumSamples(); ++i) mono.setSample (0, i, 0.9f * (float) std::sin (i * 0.02));
+                process (sc, mono);
+                if (! isFinite (b) || ! isFinite (mono) || b.getMagnitude (0, b.getNumSamples()) > 2.0f)
+                {
+                    stable = false;
+                    r.log << "        " << SomewhereControlDevice::effectNames()[e] << " at " << x << ", " << y << " misbehaved\n";
+                }
+            }
+        check (r, stable, "every effect at every corner of the pad stays finite, stereo and mono");
+
+        // The readouts match the effect
+        check (r, SomewhereControlDevice::describeX (PerformanceFx::filter, 0.5f) == "Off"
+                   && SomewhereControlDevice::describeX (PerformanceFx::delay, 0.95f) == "1/4"
+                   && SomewhereControlDevice::describeX (PerformanceFx::stutter, 0.95f) == "1/32", "the pad reads out what X does");
+
+        // Added to a track, it goes after the track's own devices and before the fader and meter
+        {
+            auto scEdit = te::createEmptyEdit (engine, outDir.getChildFile ("somewhere-control-test.tracktionedit"));
+            scEdit->ensureNumberOfAudioTracks (1);
+            auto* t = te::getAudioTracks (*scEdit)[0];
+            t->pluginList.insertPlugin (DeviceRegistry::create (*scEdit, EqDevice::xmlTypeName), 0, nullptr);
+            auto* added = SomewhereControlDevice::findOrAddTo (*t);
+            auto* again = SomewhereControlDevice::findOrAddTo (*t);
+            juce::StringArray order;
+            for (auto p : t->pluginList)
+                order.add (dynamic_cast<SomewhereControlDevice*> (p) ? "control" : dynamic_cast<EqDevice*> (p) ? "eq"
+                           : EngineHelpers::isMixerPlugin (*p) ? "mixer" : "other");
+            check (r, added != nullptr && added == again, "a track gets one Somewhere Control, found again after");
+            check (r, order.joinIntoString (" ").startsWith ("eq control mixer"), "it goes after the track's devices, before the fader (" + order.joinIntoString (" ") + ")");
+        }
+
+        fresh (PerformanceFx::filter, 0.3f, 0.7f);
+        setParam (sc.on, 1.0f);
+        snapshot (sc, outDir.getChildFile ("somewhere-control.png"));
+        setParam (sc.on, 0.0f);
+    }
+
+    //==============================================================================
     r.log << "Tape Echo\n";
     {
         auto& ec = make<EchoDevice> (*edit, EchoDevice::xmlTypeName);

@@ -5,6 +5,7 @@
 
 #include "SynthPanel.h"
 #include "OrganicDsp.h"
+#include "HazeEngine.h"
 
 namespace elsewhere
 {
@@ -24,10 +25,11 @@ class HazeDevice : public ElsewhereDevice
 {
 public:
     static constexpr const char* xmlTypeName = "elsewhereHaze";
-    static constexpr int maxVoices = 8;
-    static constexpr int chunk = 64;
+    static constexpr int maxVoices = HazeEngine::maxVoices;
 
-    enum Wave { saw, square, triangle, soft, numWaves };
+    using Wave = HazeEngine::Wave;
+    static constexpr int saw = HazeEngine::saw, square = HazeEngine::square, triangle = HazeEngine::triangle,
+                         soft = HazeEngine::soft, numWaves = HazeEngine::numWaves;
     static juce::StringArray waveNames()    { return { "Saw", "Square", "Triangle", "Soft" }; }
     static juce::StringArray chromaNames()  { return { "Off", "I", "II", "I+II" }; }
 
@@ -38,31 +40,32 @@ public:
         auto pick = [] (juce::StringArray names) { return [names] (float v) { return names[juce::jlimit (0, names.size() - 1, juce::roundToInt (v))]; }; };
         auto octave = [] (float v) { const int o = juce::roundToInt (v); return o == 0 ? juce::String ("0") : (o > 0 ? "+" : "") + juce::String (o) + " oct"; };
         const juce::NormalisableRange<float> pct { 0.0f, 100.0f };
+        const HazeEngine::Params d;     // the defaults
 
-        wave      = addParameter ("wave", "Wave", (float) saw, stepped (0, numWaves - 1), pick (waveNames()));
-        detune    = addParameter ("detune", "Detune", 12.0f, { 0.0f, 50.0f }, cents);
-        sub       = addParameter ("sub", "Sub", 20.0f, pct, percentText);
-        noise     = addParameter ("noise", "Noise", 0.0f, pct, percentText);
-        range     = addParameter ("range", "Range", 0.0f, stepped (-2, 1), octave);
-        cutoff    = addParameter ("cutoff", "Cutoff", 2400.0f, freqRange (80.0f, 18000.0f), hzText);
-        resonance = addParameter ("res", "Resonance", 15.0f, pct, percentText);
-        envAmount = addParameter ("envamt", "Env", 30.0f, pct, percentText);
-        attack    = addParameter ("attack", "Attack", 0.25f, skewed (0.001f, 6.0f, 0.4f), secs);
-        decay     = addParameter ("decay", "Decay", 1.2f, skewed (0.02f, 6.0f, 0.8f), secs);
-        sustain   = addParameter ("sustain", "Sustain", 75.0f, pct, percentText);
-        release   = addParameter ("release", "Release", 1.4f, skewed (0.02f, 8.0f, 1.2f), secs);
-        wow       = addParameter ("wow", "Wow", 35.0f, pct, percentText);
-        flutter   = addParameter ("flutter", "Flutter", 20.0f, pct, percentText);
-        age       = addParameter ("age", "Age", 40.0f, pct, percentText);
-        speed     = addParameter ("speed", "Speed", 92.0f, { 50.0f, 100.0f }, percentText);
-        tracking  = addParameter ("tracking", "Tracking", 10.0f, pct, percentText);
-        bandwidth = addParameter ("bandwidth", "Bandwidth", 7000.0f, freqRange (1500.0f, 20000.0f), hzText);
-        chroma    = addParameter ("chroma", "Chroma", 1.0f, stepped (0, 3), pick (chromaNames()));
-        hiss      = addParameter ("hiss", "Hiss", 20.0f, pct, percentText);
-        space     = addParameter ("space", "Space", 60.0f, pct, percentText);
-        spaceMix  = addParameter ("smix", "Space Mix", 30.0f, pct, percentText);
-        drift     = addParameter ("drift", "Drift", 30.0f, pct, percentText);
-        volume    = addParameter ("volume", "Volume", -6.0f, { -60.0f, 6.0f }, dbText);
+        wave      = addParameter ("wave", "Wave", d.wave, stepped (0, numWaves - 1), pick (waveNames()));
+        detune    = addParameter ("detune", "Detune", d.detune, { 0.0f, 50.0f }, cents);
+        sub       = addParameter ("sub", "Sub", d.sub, pct, percentText);
+        noise     = addParameter ("noise", "Noise", d.noise, pct, percentText);
+        range     = addParameter ("range", "Range", d.range, stepped (-2, 1), octave);
+        cutoff    = addParameter ("cutoff", "Cutoff", d.cutoff, freqRange (80.0f, 18000.0f), hzText);
+        resonance = addParameter ("res", "Resonance", d.resonance, pct, percentText);
+        envAmount = addParameter ("envamt", "Env", d.envAmount, pct, percentText);
+        attack    = addParameter ("attack", "Attack", d.attack, skewed (0.001f, 6.0f, 0.4f), secs);
+        decay     = addParameter ("decay", "Decay", d.decay, skewed (0.02f, 6.0f, 0.8f), secs);
+        sustain   = addParameter ("sustain", "Sustain", d.sustain, pct, percentText);
+        release   = addParameter ("release", "Release", d.release, skewed (0.02f, 8.0f, 1.2f), secs);
+        wow       = addParameter ("wow", "Wow", d.wow, pct, percentText);
+        flutter   = addParameter ("flutter", "Flutter", d.flutter, pct, percentText);
+        age       = addParameter ("age", "Age", d.age, pct, percentText);
+        speed     = addParameter ("speed", "Speed", d.speed, { 50.0f, 100.0f }, percentText);
+        tracking  = addParameter ("tracking", "Tracking", d.tracking, pct, percentText);
+        bandwidth = addParameter ("bandwidth", "Bandwidth", d.bandwidth, freqRange (1500.0f, 20000.0f), hzText);
+        chroma    = addParameter ("chroma", "Chroma", d.chroma, stepped (0, 3), pick (chromaNames()));
+        hiss      = addParameter ("hiss", "Hiss", d.hiss, pct, percentText);
+        space     = addParameter ("space", "Space", d.space, pct, percentText);
+        spaceMix  = addParameter ("smix", "Space Mix", d.spaceMix, pct, percentText);
+        drift     = addParameter ("drift", "Drift", d.drift, pct, percentText);
+        volume    = addParameter ("volume", "Volume", d.volume, { -60.0f, 6.0f }, dbText);
 
         if (! state.hasProperty ("patch"))
             state.setProperty ("patch", 0, nullptr);
@@ -85,50 +88,23 @@ public:
     int getNumOutputChannelsGivenInputs (int) override  { return 2; }
 
     //==============================================================================
-    // Patches
-    struct Patch { const char* name; std::vector<std::pair<const char*, float>> values; };
+    // Patches (HazeEngine keeps them, so anything playing the engine has the same ones)
+    using Patch = HazeEngine::Patch;
+    static const std::vector<Patch>& patches()          { return HazeEngine::patches(); }
 
-    static const std::vector<Patch>& patches()
+    float patchValue (int index, te::AutomatableParameter& ap) const
     {
-        static const std::vector<Patch> all = {
-            { "Saturday Morning", { } },
-            { "Pastel Mall",      { { "wave", soft }, { "detune", 8 }, { "sub", 30 }, { "cutoff", 4000 }, { "speed", 85 }, { "chroma", 2 },
-                                    { "space", 70 }, { "smix", 45 }, { "release", 2.5f }, { "age", 25 } } },
-            { "Rerun",            { { "wave", square }, { "detune", 18 }, { "cutoff", 1500 }, { "res", 25 }, { "envamt", 40 }, { "decay", 0.8f },
-                                    { "sustain", 40 }, { "wow", 50 }, { "age", 55 }, { "tracking", 30 } } },
-            { "Late Broadcast",   { { "cutoff", 900 }, { "res", 30 }, { "attack", 1.2f }, { "release", 3.0f }, { "wow", 60 }, { "flutter", 30 },
-                                    { "age", 70 }, { "hiss", 45 }, { "tracking", 25 }, { "speed", 90 } } },
-            { "Station Ident",    { { "wave", triangle }, { "sub", 40 }, { "attack", 0.002f }, { "decay", 0.6f }, { "sustain", 0 }, { "release", 0.8f },
-                                    { "envamt", 50 }, { "wow", 20 }, { "space", 45 }, { "volume", 6 } } },
-            { "Marine Layer",     { { "wave", soft }, { "detune", 25 }, { "attack", 2.0f }, { "release", 4.0f }, { "cutoff", 1800 }, { "wow", 45 },
-                                    { "speed", 80 }, { "space", 85 }, { "smix", 55 }, { "chroma", 3 } } },
-            { "Kid Memory",       { { "wave", square }, { "detune", 6 }, { "cutoff", 3000 }, { "decay", 1.2f }, { "sustain", 30 }, { "wow", 40 },
-                                    { "flutter", 40 }, { "age", 50 }, { "tracking", 20 } } },
-            { "Faded Polaroid",   { { "detune", 30 }, { "cutoff", 1200 }, { "attack", 0.6f }, { "wow", 70 }, { "age", 80 }, { "bandwidth", 3500 },
-                                    { "hiss", 60 }, { "tracking", 45 } } },
-            { "Sunday Bass",      { { "range", -1 }, { "sub", 60 }, { "cutoff", 600 }, { "res", 20 }, { "envamt", 45 }, { "attack", 0.005f },
-                                    { "decay", 0.5f }, { "sustain", 50 }, { "release", 0.4f }, { "wow", 15 }, { "age", 35 }, { "space", 20 }, { "smix", 10 } } },
-            { "Ghost Choir",      { { "wave", soft }, { "detune", 35 }, { "noise", 15 }, { "attack", 1.5f }, { "release", 3.5f }, { "cutoff", 2600 },
-                                    { "wow", 55 }, { "speed", 88 }, { "chroma", 2 }, { "space", 80 }, { "smix", 50 } } },
-        };
-        return all;
+        return HazeEngine::patchValue (index, ap.paramID.toRawUTF8());
     }
 
-    float patchValue (const Patch& patch, te::AutomatableParameter& ap) const
-    {
-        for (auto& [id, value] : patch.values)
-            if (ap.paramID == id)
-                return value;
-        return ap.getDefaultValue().value_or (ap.getCurrentBaseValue());
-    }
-
-    void loadPatch (int index)
+    /** Sets every control to a patch: as its own undo step, or as part of the one in progress. */
+    void loadPatch (int index, bool ownUndoStep = true)
     {
         index = juce::jlimit (0, (int) patches().size() - 1, index);
-        const auto& patch = patches()[(size_t) index];
-        edit.getUndoManager().beginNewTransaction ("Load Haze patch");
+        if (ownUndoStep)
+            edit.getUndoManager().beginNewTransaction ("Load Haze patch");
         for (auto& p : params)
-            p->getParameter().setParameter (patchValue (patch, p->getParameter()), juce::sendNotification);
+            p->getParameter().setParameter (patchValue (index, p->getParameter()), juce::sendNotification);
         state.setProperty ("patch", index, &edit.getUndoManager());
     }
 
@@ -146,11 +122,10 @@ public:
         const int index = getPatchIndex();
         if (index < 0 || index >= (int) patches().size())
             return true;
-        const auto& patch = patches()[(size_t) index];
         for (auto& p : params)
         {
             auto& ap = p->getParameter();
-            const float v = patchValue (patch, ap);
+            const float v = patchValue (index, ap);
             if (std::abs (ap.getCurrentBaseValue() - v) > 1.0e-3f * juce::jmax (1.0f, std::abs (v)))
                 return true;
         }
@@ -163,31 +138,13 @@ public:
         // (The engine can do this while audio is still running through the device)
         const juce::SpinLock::ScopedLockType dspGuard (dspLock);
         rate = info.sampleRate;
-        for (size_t i = 0; i < voice.size(); ++i)
-        {
-            voice[i] = Voice();
-            voice[i].drift = SynthCore::Drift ((int) i * 19 + 5);
-        }
-        chorusFx.prepare (rate);
-        spaceFx.prepare (rate);
-        for (auto& t : tape) t.assign ((size_t) (rate * 0.08) + 8, 0.0f);
-        tapePos = 0;
-        bandL1.reset(); bandL2.reset(); bandR1.reset(); bandR2.reset(); bumpL.reset(); bumpR.reset(); hissHp.reset();
-        wowPhase = flutterPhase = flutter2Phase = 0.0f;
-        wowRandom = wowTarget = 0.0f;
-        glitchLeft = 0; glitchDepth = 0.0f; glitchSag = 0.0f;
-        bend = modWheel = rolling = 0.0f;
-        pedal = false;
-        noteCounter = 0;
-        rng.setSeed (1977);
+        engine.prepare (rate, info.blockSizeSamples);
+        right.assign ((size_t) juce::jmax (info.blockSizeSamples, 512) * 2, 0.0f);
     }
 
     void deinitialise() override {}
 
-    void midiPanic() override
-    {
-        for (auto& v : voice) { v.held = v.sustained = false; v.amp.gate (false); v.filt.gate (false); }
-    }
+    void midiPanic() override       { engine.allNotesOff(); }
 
     void applyToBuffer (const te::PluginRenderContext& fc) override
     {
@@ -196,12 +153,13 @@ public:
         if (! dspGuard.isLocked())
             return;     // being set up again for a new rate or buffer size
 
-        if (fc.destBuffer == nullptr || tape[0].empty())
+        if (fc.destBuffer == nullptr || ! engine.isPrepared())
             return;
 
         juce::ScopedNoDenormals noDenormals;
         auto& buf = *fc.destBuffer;
         buf.clear (fc.bufferStartSample, fc.bufferNumSamples);
+        updateEngine();
 
         int done = 0;
         if (fc.bufferForMidiMessages != nullptr)
@@ -219,293 +177,62 @@ public:
             render (buf, fc.bufferStartSample + done, fc.bufferNumSamples - done);
     }
 
+    /** The sound itself. */
+    HazeEngine engine;
+
     // For the screen
-    SynthCore::ScopeBuffer scope;
-    std::atomic<float> wowNow { 0.0f };         // the tape's pitch deviation right now, -1..1
-    std::atomic<bool> glitching { false };
-    std::atomic<double> playSeconds { 0.0 };    // tape counter: time spent playing
-    int getActiveVoices() const                 { return activeVoices.load(); }
+    SynthCore::ScopeBuffer& scope = engine.scope;
+    std::atomic<float>& wowNow = engine.wowNow;
+    std::atomic<bool>& glitching = engine.glitching;
+    std::atomic<double>& playSeconds = engine.playSeconds;
+    int getActiveVoices() const                 { return engine.activeVoices.load(); }
 
     Param wave, detune, sub, noise, range, cutoff, resonance, envAmount, attack, decay, sustain, release;
     Param wow, flutter, age, speed, tracking, bandwidth, chroma, hiss, space, spaceMix, drift, volume;
 
 private:
-    struct Voice
-    {
-        int note = -1;
-        float vel = 1.0f, pan = 0.0f;
-        bool held = false, sustained = false;
-        juce::uint32 age = 0;
-        std::array<SynthCore::Oscillator, 3> osc;      // two detuned oscillators and the sub
-        SynthCore::Svf filter;
-        SynthCore::AnalogEnvelope amp, filt;
-        SynthCore::Drift drift;
-        bool active() const { return amp.isActive(); }
-    };
-
     double rate = 48000.0;
-    std::array<Voice, maxVoices> voice;
-    SynthCore::Noise noiseGen;
-    SynthCore::StereoChorus chorusFx;
-    OrganicDsp::Space spaceFx;
-    SynthCore::Svf bandL1, bandL2, bandR1, bandR2, bumpL, bumpR, hissHp;
-    std::array<std::vector<float>, 2> tape;
-    int tapePos = 0;
-    float wowPhase = 0.0f, flutterPhase = 0.0f, flutter2Phase = 0.0f, wowRandom = 0.0f, wowTarget = 0.0f;
-    int glitchLeft = 0, glitchLength = 1;
-    float glitchDepth = 0.0f, glitchSag = 0.0f;
-    float bend = 0.0f, modWheel = 0.0f, rolling = 0.0f;
-    bool pedal = false;
-    juce::uint32 noteCounter = 0;
-    juce::Random rng;
-    std::atomic<int> activeVoices { 0 };
-    std::array<float, chunk> ml {}, mr {};
+    std::vector<float> right;       // for a mono buffer
+
+    /** The parameters as they are now (automation included) into the engine. */
+    void updateEngine()
+    {
+        auto& p = engine.params;
+        p.wave = wave.get(); p.detune = detune.get(); p.sub = sub.get(); p.noise = noise.get(); p.range = range.get();
+        p.cutoff = cutoff.get(); p.resonance = resonance.get(); p.envAmount = envAmount.get();
+        p.attack = attack.get(); p.decay = decay.get(); p.sustain = sustain.get(); p.release = release.get();
+        p.wow = wow.get(); p.flutter = flutter.get(); p.age = age.get(); p.speed = speed.get();
+        p.tracking = tracking.get(); p.bandwidth = bandwidth.get(); p.chroma = chroma.get(); p.hiss = hiss.get();
+        p.space = space.get(); p.spaceMix = spaceMix.get(); p.drift = drift.get(); p.volume = volume.get();
+    }
 
     void handleMidi (const juce::MidiMessage& m)
     {
-        if (m.isNoteOn())                       noteOn (m.getNoteNumber(), m.getFloatVelocity());
-        else if (m.isNoteOff())                 noteOff (m.getNoteNumber());
-        else if (m.isPitchWheel())              bend = (float) (m.getPitchWheelValue() - 8192) / 8192.0f;
-        else if (m.isControllerOfType (1))      modWheel = (float) m.getControllerValue() / 127.0f;
-        else if (m.isSustainPedalOn())          pedal = true;
-        else if (m.isSustainPedalOff())
-        {
-            pedal = false;
-            for (auto& v : voice)
-                if (v.sustained && ! v.held) { v.sustained = false; v.amp.gate (false); v.filt.gate (false); }
-        }
+        if (m.isNoteOn())                       engine.noteOn (m.getNoteNumber(), m.getFloatVelocity());
+        else if (m.isNoteOff())                 engine.noteOff (m.getNoteNumber());
+        else if (m.isPitchWheel())              engine.setPitchBend ((float) (m.getPitchWheelValue() - 8192) / 8192.0f);
+        else if (m.isControllerOfType (1))      engine.setModWheel ((float) m.getControllerValue() / 127.0f);
+        else if (m.isSustainPedalOn())          engine.setSustainPedal (true);
+        else if (m.isSustainPedalOff())         engine.setSustainPedal (false);
         else if (m.isAllNotesOff() || m.isAllSoundOff())
             midiPanic();
     }
 
-    void noteOn (int note, float vel)
-    {
-        Voice* target = nullptr;
-        for (auto& v : voice) if (v.active() && v.note == note) { target = &v; break; }
-        if (target == nullptr) for (auto& v : voice) if (! v.active()) { target = &v; break; }
-        if (target == nullptr)
-            for (int pass = 0; pass < 2 && target == nullptr; ++pass)
-            {
-                juce::uint32 oldest = std::numeric_limits<juce::uint32>::max();
-                for (auto& v : voice)
-                    if ((pass == 1 || ! v.held) && v.age < oldest) { oldest = v.age; target = &v; }
-            }
-
-        auto& v = *target;
-        if (! v.active())
-        {
-            for (auto& o : v.osc) o.reset (noiseGen.white() * 0.5f + 0.5f);
-            v.filter.reset();
-        }
-        v.note = note;
-        v.vel = vel;
-        v.held = true;
-        v.sustained = false;
-        v.age = ++noteCounter;
-        v.pan = ((noteCounter % 2) == 0 ? 1.0f : -1.0f) * (0.1f + 0.15f * (float) ((noteCounter / 2) % 3) / 2.0f);
-        v.amp.gate (true);
-        v.filt.gate (true);
-    }
-
-    void noteOff (int note)
-    {
-        for (auto& v : voice)
-        {
-            if (v.note != note || ! v.held) continue;
-            v.held = false;
-            if (pedal) v.sustained = true;
-            else { v.amp.gate (false); v.filt.gate (false); }
-        }
-    }
-
-    static float mtof (float note)      { return 440.0f * std::pow (2.0f, (note - 69.0f) / 12.0f); }
-
     void render (juce::AudioBuffer<float>& buf, int start, int num)
     {
+        auto* L = buf.getWritePointer (0, start);
+
+        if (buf.getNumChannels() > 1)
+            return engine.render (L, buf.getWritePointer (1, start), num);
+
+        // A mono buffer: the right side goes nowhere
         for (int done = 0; done < num; )
         {
-            const int n = juce::jmin (chunk, num - done);
-            renderChunk (buf, start + done, n);
+            const int n = juce::jmin ((int) right.size(), num - done);
+            std::fill (right.begin(), right.begin() + n, 0.0f);
+            engine.render (L + done, right.data(), n);
             done += n;
         }
-    }
-
-    void renderChunk (juce::AudioBuffer<float>& buf, int start, int n)
-    {
-        auto* L = buf.getWritePointer (0, start);
-        auto* R = buf.getNumChannels() > 1 ? buf.getWritePointer (1, start) : nullptr;
-        std::fill (ml.begin(), ml.begin() + n, 0.0f);
-        std::fill (mr.begin(), mr.begin() + n, 0.0f);
-
-        const float sr = (float) rate;
-        const int w = juce::roundToInt (wave.get());
-        const float det = detune.get() / 100.0f;            // semitones (0..0.5)
-        const float subLevel = sub.get() / 100.0f, noiseLevel = noise.get() / 100.0f;
-        const float slowSemis = 12.0f * std::log2 (juce::jlimit (0.5f, 1.0f, speed.get() / 100.0f));
-        const float rangeSemis = 12.0f * (float) juce::roundToInt (range.get());
-        const float res = resonance.get() / 100.0f * 0.85f;
-        const float envOct = envAmount.get() / 100.0f * 5.0f;
-        const float a = attack.get(), d = decay.get(), s = sustain.get() / 100.0f, r = release.get();
-        const float driftSemis = drift.get() / 100.0f * 0.18f;
-        const float bendSemis = bend * 2.0f;
-
-        int active = 0;
-        for (auto& v : voice)
-        {
-            if (! v.active()) continue;
-            ++active;
-            const float velGain = 0.55f + 0.45f * v.vel;
-            const float driftNow = v.drift.process (driftSemis, sr / (float) n);
-            const float pitch = (float) v.note + slowSemis + rangeSemis + bendSemis + driftNow;
-            const float dt1 = mtof (pitch - det * 0.5f) / sr, dt2 = mtof (pitch + det * 0.5f) / sr, dtSub = mtof (pitch - 12.0f) / sr;
-            const float base = cutoff.get() * std::pow (2.0f, (pitch - 60.0f) / 12.0f * 0.35f) * (0.75f + 0.25f * v.vel);
-
-            for (int i = 0; i < n; ++i)
-            {
-                const float fenv = v.filt.process (a * 0.6f, d, s * 0.6f, r, sr);
-                const float env = v.amp.process (a, d, s, r, sr);
-                if ((i & 7) == 0)
-                    v.filter.set (juce::jlimit (40.0f, sr * 0.45f, base * std::pow (2.0f, envOct * fenv * v.vel)), res, sr);
-
-                float o1, o2;
-                switch (w)
-                {
-                    case square:   o1 = v.osc[0].process (SynthCore::Wave::square, dt1); o2 = v.osc[1].process (SynthCore::Wave::square, dt2); break;
-                    case triangle: o1 = v.osc[0].process (SynthCore::Wave::triangle, dt1); o2 = v.osc[1].process (SynthCore::Wave::triangle, dt2); break;
-                    case soft:
-                    {
-                        auto softAt = [] (SynthCore::Oscillator& o, float dt)
-                        {
-                            const float p = o.phase * juce::MathConstants<float>::twoPi;
-                            const float y = std::sin (p) + 0.22f * std::sin (2.0f * p) + 0.08f * std::sin (3.0f * p);
-                            o.advance (dt);
-                            return y * 0.85f;
-                        };
-                        o1 = softAt (v.osc[0], dt1); o2 = softAt (v.osc[1], dt2); break;
-                    }
-                    default:       o1 = v.osc[0].process (SynthCore::Wave::saw, dt1); o2 = v.osc[1].process (SynthCore::Wave::saw, dt2); break;
-                }
-                const float subOsc = v.osc[2].process (SynthCore::Wave::sine, dtSub);
-                float x = (o1 + o2) * 0.4f + subOsc * subLevel * 0.6f + noiseGen.white() * noiseLevel * 0.25f;
-                x = v.filter.lowpass (x) * env * velGain * 0.5f;
-
-                const float pan = v.pan;
-                ml[(size_t) i] += x * (1.0f - juce::jmax (0.0f, pan));
-                mr[(size_t) i] += x * (1.0f + juce::jmin (0.0f, pan));
-            }
-        }
-        activeVoices = active;
-
-        processTape (n, active > 0);
-
-        const float out = juce::Decibels::decibelsToGain (volume.get(), -60.0f);
-        for (int i = 0; i < n; ++i)
-        {
-            const float l = ml[(size_t) i] * out, rr = mr[(size_t) i] * out;
-            scope.push ((l + rr) * 0.5f);
-            L[i] += std::abs (l) < 0.8f ? l : std::copysign (0.8f + 0.18f * std::tanh ((std::abs (l) - 0.8f) / 0.18f), l);
-            if (R != nullptr)
-                R[i] += std::abs (rr) < 0.8f ? rr : std::copysign (0.8f + 0.18f * std::tanh ((std::abs (rr) - 0.8f) / 0.18f), rr);
-        }
-        if (active > 0)
-            playSeconds = playSeconds.load() + (double) n / rate;
-    }
-
-    /** Chroma, Age, Bandwidth, wow and flutter, Tracking, Hiss, then the Haze space. */
-    void processTape (int n, bool playing)
-    {
-        const float sr = (float) rate;
-        const float rollCoeff = 1.0f / (sr * (playing ? 0.15f : 0.8f));
-        chorusFx.process (ml.data(), mr.data(), n, juce::roundToInt (chroma.get()), sr);
-
-        // Age: saturation, a head bump in the lows, highs rolling off; Bandwidth on top
-        const float ageAmt = age.get() / 100.0f;
-        const float drive = 1.0f + ageAmt * 2.5f;
-        const float comp = 1.0f / std::tanh (drive * 0.6f);
-        const float bw = juce::jlimit (800.0f, sr * 0.45f, bandwidth.get() * (1.0f - 0.62f * ageAmt));
-        bandL1.set (bw, 0.15f, sr); bandL2.set (bw * 1.3f, 0.05f, sr);
-        bandR1.set (bw, 0.15f, sr); bandR2.set (bw * 1.3f, 0.05f, sr);
-        bumpL.set (95.0f, 0.4f, sr); bumpR.set (95.0f, 0.4f, sr);
-        hissHp.set (2500.0f, 0.1f, sr);
-
-        // Wow and flutter: one tape for both channels (the whole mix bends together)
-        const float warble = 1.0f + modWheel * 1.6f;
-        const float wowMs = wow.get() / 100.0f * 5.5f * warble;
-        const float flutterMs = flutter.get() / 100.0f * 0.22f;
-        const float trackAmt = tracking.get() / 100.0f;
-        const float hissLevel = hiss.get() / 100.0f * 0.022f * (0.6f + 0.6f * ageAmt);
-        const int len = (int) tape[0].size();
-        const float baseDelay = 0.012f * sr;
-
-        for (int i = 0; i < n; ++i)
-        {
-            float l = ml[(size_t) i], r = mr[(size_t) i];
-
-            if (ageAmt > 0.001f)
-            {
-                l = juce::jmap (ageAmt, l, std::tanh (l * drive * 0.6f) * comp * 0.6f);
-                r = juce::jmap (ageAmt, r, std::tanh (r * drive * 0.6f) * comp * 0.6f);
-                float lo, bp, hp;
-                bumpL.process (l, lo, bp, hp); l += bp * 0.35f * ageAmt;
-                bumpR.process (r, lo, bp, hp); r += bp * 0.35f * ageAmt;
-            }
-            l = bandL2.lowpass (bandL1.lowpass (l));
-            r = bandR2.lowpass (bandR1.lowpass (r));
-
-            // Tracking glitches: now and then the picture (and sound) sags and drops out
-            if (glitchLeft <= 0 && trackAmt > 0.0f && rng.nextFloat() < trackAmt * 0.9f / sr)
-            {
-                glitchLength = glitchLeft = (int) (sr * (0.06f + 0.22f * rng.nextFloat()));
-                glitchDepth = 0.35f + 0.6f * rng.nextFloat() * trackAmt;
-            }
-            float glitchGain = 1.0f;
-            if (glitchLeft > 0)
-            {
-                const float ph = 1.0f - (float) glitchLeft / (float) glitchLength;
-                const float shape = std::sin (ph * juce::MathConstants<float>::pi);
-                glitchGain = 1.0f - glitchDepth * shape * 0.8f;
-                glitchSag += ((glitchDepth * shape * 0.0025f * sr) - glitchSag) * 0.002f;
-                --glitchLeft;
-            }
-            else
-                glitchSag *= 0.999f;
-
-            // Wow: a slow wobble that wanders; flutter: a faster shimmer
-            wowPhase += (0.45f + 0.15f * wowRandom) / sr;
-            if (wowPhase >= 1.0f) { wowPhase -= 1.0f; wowTarget = rng.nextFloat() * 2.0f - 1.0f; }
-            wowRandom += (wowTarget - wowRandom) * (1.0f / (sr * 0.8f));
-            flutterPhase += 7.3f / sr;   if (flutterPhase >= 1.0f) flutterPhase -= 1.0f;
-            flutter2Phase += 12.9f / sr; if (flutter2Phase >= 1.0f) flutter2Phase -= 1.0f;
-            const float wowShape = std::sin (wowPhase * juce::MathConstants<float>::twoPi) * 0.75f + wowRandom * 0.25f;
-            const float flut = std::sin (flutterPhase * juce::MathConstants<float>::twoPi) * 0.7f
-                             + std::sin (flutter2Phase * juce::MathConstants<float>::twoPi) * 0.3f;
-            const float delay = baseDelay + (wowMs * wowShape + flutterMs * flut) * 0.001f * sr + glitchSag;
-            if ((i & 15) == 0)
-                wowNow = juce::jlimit (-1.0f, 1.0f, wowShape * wow.get() / 100.0f * warble);
-
-            tape[0][(size_t) tapePos] = l;
-            tape[1][(size_t) tapePos] = r;
-            auto read = [&] (const std::vector<float>& t)
-            {
-                float rp = (float) tapePos - delay;
-                while (rp < 0.0f) rp += (float) len;
-                const int i0 = (int) rp % len, i1 = (i0 + 1) % len;
-                const float f = rp - std::floor (rp);
-                return t[(size_t) i0] + f * (t[(size_t) i1] - t[(size_t) i0]);
-            };
-            l = read (tape[0]) * glitchGain;
-            r = read (tape[1]) * glitchGain;
-            if (++tapePos >= len) tapePos = 0;
-
-            // Hiss (and a burst of it in a glitch)
-            rolling += ((playing ? 1.0f : 0.0f) - rolling) * rollCoeff;    // the tape only hisses while it's rolling
-            const float h = hissHp.highpass (noiseGen.pink()) * (hissLevel + (1.0f - glitchGain) * 0.03f) * rolling;
-            ml[(size_t) i] = l + h;
-            mr[(size_t) i] = r + h * 0.9f;
-        }
-        glitching = glitchLeft > 0;
-
-        spaceFx.process (ml.data(), mr.data(), n, space.get() / 100.0f, spaceMix.get() / 100.0f, 1.0f);
     }
 };
 

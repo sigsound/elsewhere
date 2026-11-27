@@ -3,8 +3,8 @@
 
 #pragma once
 
-// Plain C++ DSP building blocks shared by Elsewhere's devices (no JUCE/Tracktion types beyond
-// juce::jlimit/MathConstants), so they can move to another framework if ever needed.
+// Plain C++ DSP building blocks shared by Elsewhere's devices: the standard library and
+// DspMath.h only, so they can move to another framework if ever needed.
 
 #include <cmath>
 #include <complex>
@@ -13,7 +13,7 @@
 #include <array>
 #include <atomic>
 #include <memory>
-#include <juce_core/juce_core.h>
+#include "DspMath.h"
 
 namespace elsewhere
 {
@@ -28,10 +28,10 @@ struct Biquad
 
     void set (Type type, double freq, double q, double gainDb, double sampleRate)
     {
-        freq = juce::jlimit (5.0, sampleRate * 0.49, freq);
-        const auto w0 = juce::MathConstants<double>::twoPi * freq / sampleRate;
+        freq = dspmath::jlimit (5.0, sampleRate * 0.49, freq);
+        const auto w0 = dspmath::MathConstants<double>::twoPi * freq / sampleRate;
         const auto cosw = std::cos (w0), sinw = std::sin (w0);
-        const auto alpha = sinw / (2.0 * juce::jmax (0.05, q));
+        const auto alpha = sinw / (2.0 * dspmath::jmax (0.05, q));
         const auto A = std::pow (10.0, gainDb / 40.0);
         const auto sqA = std::sqrt (A);
         double B0 = 1, B1 = 0, B2 = 0, A0 = 1, A1 = 0, A2 = 0;
@@ -89,10 +89,10 @@ struct Biquad
     /** Magnitude response at a frequency, in dB (for drawing the curve). */
     double magnitudeDb (double freq, double sampleRate) const
     {
-        const auto w = juce::MathConstants<double>::twoPi * freq / sampleRate;
+        const auto w = dspmath::MathConstants<double>::twoPi * freq / sampleRate;
         std::complex<double> z = std::polar (1.0, -w), z2c = z * z;
         auto h = (b0 + b1 * z + b2 * z2c) / (1.0 + a1 * z + a2 * z2c);
-        return 20.0 * std::log10 (juce::jmax (1.0e-9, std::abs (h)));
+        return 20.0 * std::log10 (dspmath::jmax (1.0e-9, std::abs (h)));
     }
 };
 
@@ -120,7 +120,7 @@ struct DelayLine
     float read (float delay) const
     {
         const int len = (int) data.size();
-        delay = juce::jlimit (1.0f, (float) (len - 2), delay);
+        delay = dspmath::jlimit (1.0f, (float) (len - 2), delay);
         float rp = (float) pos - delay;
         if (rp < 0) rp += (float) len;
         if (rp >= (float) len) rp = 0.0f;   // (a tiny negative plus len rounds up to len itself)
@@ -147,7 +147,7 @@ public:
         // K-weighting exactly as BS.1770 specifies (these reproduce its 48 kHz coefficients)
         {
             const double f0 = 1681.974450955533, G = 3.999843853973347, Q = 0.7071752369554196;
-            const double K = std::tan (juce::MathConstants<double>::pi * f0 / sampleRate);
+            const double K = std::tan (dspmath::MathConstants<double>::pi * f0 / sampleRate);
             const double Vh = std::pow (10.0, G / 20.0), Vb = std::pow (Vh, 0.4996667741545416);
             const double a0 = 1.0 + K / Q + K * K;
             for (auto& f : preFilter)
@@ -156,7 +156,7 @@ public:
         }
         {
             const double f0 = 38.13547087602444, Q = 0.5003270373238773;
-            const double K = std::tan (juce::MathConstants<double>::pi * f0 / sampleRate);
+            const double K = std::tan (dspmath::MathConstants<double>::pi * f0 / sampleRate);
             const double a0 = 1.0 + K / Q + K * K;
             for (auto& f : rlbFilter)
                 f.setCoefficients (1.0, -2.0, 1.0, 2.0 * (K * K - 1.0) / a0, (1.0 - K / Q + K * K) / a0);
@@ -247,7 +247,7 @@ private:
     std::array<double, numBins> binEnergy {};
     std::array<Biquad, 2> preFilter, rlbFilter;
 
-    static size_t binFor (double lufs)  { return (size_t) juce::jlimit (0.0, (double) numBins - 1.0, std::floor ((lufs + 70.0) * 10.0)); }
+    static size_t binFor (double lufs)  { return (size_t) dspmath::jlimit (0.0, (double) numBins - 1.0, std::floor ((lufs + 70.0) * 10.0)); }
 
     void addBlock (double meanSquare)
     {
@@ -366,9 +366,9 @@ private:
             for (int k = 0; k < tpTaps; ++k)
             {
                 const double t = (double) k - (tpDelay - 1) - p / 4.0;          // distance from the interpolated point
-                const double sinc = std::abs (t) < 1.0e-9 ? 1.0 : std::sin (juce::MathConstants<double>::pi * t) / (juce::MathConstants<double>::pi * t);
-                const double w = 0.42 + 0.5 * std::cos (juce::MathConstants<double>::pi * t / (tpTaps / 2 + 1))
-                                      + 0.08 * std::cos (2.0 * juce::MathConstants<double>::pi * t / (tpTaps / 2 + 1));   // Blackman
+                const double sinc = std::abs (t) < 1.0e-9 ? 1.0 : std::sin (dspmath::MathConstants<double>::pi * t) / (dspmath::MathConstants<double>::pi * t);
+                const double w = 0.42 + 0.5 * std::cos (dspmath::MathConstants<double>::pi * t / (tpTaps / 2 + 1))
+                                      + 0.08 * std::cos (2.0 * dspmath::MathConstants<double>::pi * t / (tpTaps / 2 + 1));   // Blackman
                 phase[(size_t) p - 1][(size_t) k] = (float) (sinc * w);
                 sum += sinc * w;
             }
@@ -412,7 +412,7 @@ public:
     {
         twiddles.resize ((size_t) n / 2);
         for (int i = 0; i < n / 2; ++i)
-            twiddles[(size_t) i] = std::polar (1.0f, -2.0f * juce::MathConstants<float>::pi * (float) i / (float) n);
+            twiddles[(size_t) i] = std::polar (1.0f, -2.0f * dspmath::MathConstants<float>::pi * (float) i / (float) n);
 
         bitrev.resize ((size_t) n);
         for (int i = 0, j = 0; i < n; ++i)
@@ -672,7 +672,7 @@ inline std::vector<float> minimumPhaseIr (const std::vector<float>& magnitude /*
     // Fade out the last quarter so truncation doesn't click
     const int fade = length / 4;
     for (int i = 0; i < fade; ++i)
-        ir[(size_t) (length - fade + i)] *= 0.5f * (1.0f + std::cos (juce::MathConstants<float>::pi * (float) i / (float) fade));
+        ir[(size_t) (length - fade + i)] *= 0.5f * (1.0f + std::cos (dspmath::MathConstants<float>::pi * (float) i / (float) fade));
 
     return ir;
 }
