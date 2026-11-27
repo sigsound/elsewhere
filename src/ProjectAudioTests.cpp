@@ -4,6 +4,7 @@
 #include "ProjectAudioTests.h"
 #include "ProjectAudio.h"
 #include "devices/DeviceBase.h"
+#include "SomewhereBeat.h"
 
 namespace elsewhere::ProjectAudioTests
 {
@@ -49,6 +50,36 @@ namespace
                     return w->getAudioFile().getFile().existsAsFile();
 
         return false;
+    }
+
+    void writeMidi (const juce::File& f, int channel, std::initializer_list<std::pair<int, int>> notes)
+    {
+        juce::MidiMessageSequence seq;
+        int tick = 0;
+
+        for (auto [note, velocity] : notes)
+        {
+            seq.addEvent (juce::MidiMessage::noteOn (channel, note, (juce::uint8) velocity), tick);
+            seq.addEvent (juce::MidiMessage::noteOff (channel, note), tick + 12);
+            tick += 24;
+        }
+
+        seq.updateMatchedPairs();
+        juce::MidiFile mf;
+        mf.setTicksPerQuarterNote (96);
+        mf.addTrack (seq);
+        f.deleteFile();
+        juce::FileOutputStream out (f);
+        mf.writeTo (out);
+    }
+
+    void writeSound (const juce::File& senderFolder, const juce::String& name, int pad)
+    {
+        writeSine (senderFolder.getChildFile (name + ".wav"));
+        auto* o = new juce::DynamicObject();
+        o->setProperty ("name", name);
+        if (pad > 0) o->setProperty ("pad", pad);
+        senderFolder.getChildFile (name + ".somewhere.json").replaceWithText (juce::JSON::toString (juce::var (o)));
     }
 }
 
@@ -186,6 +217,85 @@ int run (te::Engine& engine, const juce::File& outDir)
         music.getChildFile ("Elsewhere Projects").createDirectory();
         log.check (Legacy::preferExisting (music.getChildFile ("Elsewhere Projects"), legacyRoot) == music.getChildFile ("Elsewhere Projects"),
                    "Elsewhere Projects wins once it exists");
+    }
+
+    // A beat from Somewhere: its drums and keys as MIDI, playing the phone's own sounds
+    {
+        auto sender = outDir.getChildFile ("Inbox/Nick (a1b2)");
+        auto folder = sender.getChildFile ("Beats/2026-11-26 10.00.00 Beat P1 96bpm");
+        writeSine (folder.getChildFile ("01 Kick.wav"));
+        writeSine (folder.getChildFile ("02 Snare.wav"));
+        writeSine (folder.getChildFile ("17 Teclas Piano.wav"));
+        writeMidi (folder.getChildFile ("Beat.mid"), 10, { { 36, 100 }, { 37, 56 } });
+        writeMidi (folder.getChildFile ("Keys.mid"), 1, { { 60, 80 }, { 64, 80 } });
+        folder.getChildFile (SomewhereBeat::infoFileName)
+              .replaceWithText (R"j({"app":"Somewhere","format":1,"bpm":96,"swing":0,"patterns":[1],"steps":16,"sender":"Nick (a1b2)","keysSound":"Piano"})j");
+        writeSound (sender, "Kick", 1);
+        writeSound (sender, "Piano", 0);
+
+        log.check (SomewhereBeat::findBeatFolder ({ folder }) == folder, "a beat folder is recognised");
+        log.check (SomewhereBeat::findBeatFolder ({ folder.getChildFile ("01 Kick.wav"), folder.getChildFile ("Beat.mid") }) == folder,
+                   "so are the files inside it");
+        log.check (SomewhereBeat::findBeatFolder ({ take }) == juce::File(), "other files aren't");
+
+        auto beat = SomewhereBeat::read (folder);
+        log.check (beat.has_value() && beat->name == "Beat P1 96bpm", "beat name from the folder");
+        log.check (beat.has_value() && beat->stems.size() == 3 && beat->stems[1].pad == 1 && beat->stems[2].pad == -1
+                   && beat->stems[2].sound == "Piano", "stems: pads in order, the keys last whatever the language");
+
+        auto build = [&] (Project& p)
+        {
+            juce::Array<juce::File> stems;
+            for (auto& s : beat->stems) stems.add (p.importAudioFile (s.file));
+            return SomewhereBeat::build (p.getEdit(), *beat, stems, {}, nullptr, [&p] (const juce::File& f) { return p.importAudioFile (f); });
+        };
+
+        if (beat)
+        {
+            auto beatFile = Project::createProjectFolder (outDir.getChildFile ("Beats"), "Beat Song");
+            Project p (engine, beatFile);
+            auto r = build (p);
+
+            log.check (juce::approximatelyEqual (p.getEdit().tempoSequence.getTempo (0)->getBpm(), 96.0), "an empty song takes the beat's tempo");
+            log.check (r.drums != nullptr && DrumTrack::isDrumTrack (*r.drums), "a drum track");
+            log.check (r.missing.contains ("Snare") && ! r.drumsPlay, "a missing pad sound is reported");
+            log.check (r.drums != nullptr && r.drums->isMuted (false) && r.stems.size() == 3
+                       && ! r.stems[0]->isMuted (false) && ! r.stems[1]->isMuted (false), "then the drum stems play and the drum track is muted");
+
+            auto* drums = r.drums != nullptr ? r.drums->pluginList.findFirstPluginOfType<DrumsDevice>() : nullptr;
+            log.check (drums != nullptr && drums->padHasUserSample (0) && drums->getPadDisplayName (0) == "Kick" && ! drums->padHasUserSample (1),
+                       "the kick pad has the phone's kick");
+
+            int notes = 0, soft = 0;
+            if (r.drums != nullptr)
+                for (auto c : r.drums->getClips())
+                    if (auto* mc = dynamic_cast<te::MidiClip*> (c))
+                        for (auto n : mc->getSequence().getNotes())
+                            ++notes, soft += n->getVelocity() < 90 ? 1 : 0;
+            log.check (notes == 2 && soft == 1, "Beat.mid is on the drum track, soft and hard steps kept");
+
+            auto* sampler = r.keys != nullptr ? r.keys->pluginList.findFirstPluginOfType<te::SamplerPlugin>() : nullptr;
+            if (sampler != nullptr) sampler->flushPendingUpdates();
+            log.check (sampler != nullptr && sampler->getNumSounds() == 1 && sampler->getKeyNote (0) == 60
+                       && sampler->getSoundFile (0).getFile().isAChildOf (p.getFolder()), "the keys play the phone's sound, from C4, copied into the project");
+            log.check (r.keysPlay && r.keys != nullptr && ! r.keys->isMuted (false) && r.stems[2]->isMuted (false), "the keys play as MIDI and their stem is muted");
+        }
+
+        writeSound (sender, "Snare", 2);
+
+        if (beat)
+        {
+            auto beatFile = Project::createProjectFolder (outDir.getChildFile ("Beats"), "Beat Song 2");
+            Project p (engine, beatFile);
+            p.getEdit().tempoSequence.getTempo (0)->setBpm (120.0);
+            auto first = te::getAudioTracks (p.getEdit()).getFirst();
+            first->insertWaveClip ("Other", take, te::ClipPosition { te::TimeRange (te::TimePosition(), te::TimePosition::fromSeconds (1.0)), {} }, false);
+            auto r = build (p);
+
+            log.check (juce::approximatelyEqual (p.getEdit().tempoSequence.getTempo (0)->getBpm(), 120.0), "a song with clips keeps its tempo");
+            log.check (r.missing.isEmpty() && r.drumsPlay && ! r.drums->isMuted (false) && r.stems[0]->isMuted (false) && r.stems[1]->isMuted (false),
+                       "with every sound there, the drum track plays and its stems are muted");
+        }
     }
 
     log.text = "Project audio: " + juce::String (log.failures) + " failure(s)\n" + log.text;

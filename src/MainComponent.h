@@ -138,6 +138,7 @@ public:
     /** Imports several files (e.g. stems) as one new track each, all starting at the same time.
         Audio is copied into the project on a background thread. */
     void importAsNewTracks (juce::Array<juce::File>, te::TimePosition start);
+    void importSomewhereBeat (const juce::File& folder, te::TimePosition start);
     void showImportDialog();
 
     /** Switches to the arrangement, zoomed to show everything (after importing a project). */

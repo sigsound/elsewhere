@@ -5,6 +5,7 @@
 #include "Mixing.h"
 #include "PluginWindow.h"
 #include "MasteringView.h"
+#include "SomewhereBeat.h"
 
 namespace elsewhere
 {
@@ -536,6 +537,9 @@ void MainComponent::showImportDialog()
 
 void MainComponent::importAsNewTracks (juce::Array<juce::File> files, te::TimePosition start)
 {
+    if (auto folder = SomewhereBeat::findBeatFolder (files); folder != juce::File())
+        return importSomewhereBeat (folder, start);
+
     files.removeIf ([] (const juce::File& f) { return ! f.hasFileExtension (te::soundFileAndMidiExtensions); });
 
     if (files.isEmpty())
@@ -553,6 +557,46 @@ void MainComponent::importAsNewTracks (juce::Array<juce::File> files, te::TimePo
     {
         if (safeThis != nullptr)
             safeThis->createTracksForImportedFiles (originals, local, start);
+    });
+    job->launchThread();
+}
+
+void MainComponent::importSomewhereBeat (const juce::File& folder, te::TimePosition start)
+{
+    auto beat = SomewhereBeat::read (folder);
+
+    if (! beat)
+        return;
+
+    juce::Array<juce::File> stems;
+    for (auto& s : beat->stems)
+        stems.add (s.file);
+
+    auto safeThis = SafePointer<MainComponent> (this);
+    auto* job = new ImportJob (*project, stems, [safeThis, b = *beat, start] (juce::Array<juce::File> local)
+    {
+        if (safeThis == nullptr)
+            return;
+
+        auto& edit = safeThis->project->getEdit();
+        edit.getUndoManager().beginNewTransaction ("Import " + b.name);
+        auto* proj = safeThis->project.get();
+        auto r = SomewhereBeat::build (edit, b, local, start, safeThis->getLastNonReturnTrack(),
+                                       [proj] (const juce::File& f) { return proj->importAudioFile (f); });
+
+        if (auto* focus = r.drums != nullptr ? r.drums : r.keys != nullptr ? r.keys : r.stems.getFirst())
+            safeThis->viewState->focusTrack (focus);
+
+        if (! safeThis->isViewShowing (ViewLayout::MainView::arrangement))
+            safeThis->setMainView (ViewLayout::MainView::arrangement);
+
+        juce::MessageManager::callAsync ([safeThis] { if (safeThis) safeThis->arrangement->zoomToFit(); });
+
+        if (! r.missing.isEmpty())
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Import " + b.name,
+                "These sounds weren't in the phone's folder, so the beat plays from its stems for now:\n"
+                + r.missing.joinIntoString ("\n")
+                + "\n\nTurn on sending in Somewhere's Settings so its sounds arrive too, then import the beat again to edit it as MIDI.");
     });
     job->launchThread();
 }
