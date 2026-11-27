@@ -296,6 +296,38 @@ int run (te::Engine& engine, const juce::File& outDir)
             log.check (r.missing.isEmpty() && r.drumsPlay && ! r.drums->isMuted (false) && r.stems[0]->isMuted (false) && r.stems[1]->isMuted (false),
                        "with every sound there, the drum track plays and its stems are muted");
         }
+
+        // A self-contained beat: its sounds in its own Sounds folder, kit sounds included
+        {
+            auto own = outDir.getChildFile ("Inbox/Mia (c3d4)/Beats/2026-11-26 11.00.00 Beat P2 100bpm");
+            writeSine (own.getChildFile ("01 Lo-Fi Kick.wav"));
+            writeSine (own.getChildFile ("03 Choir.wav"));
+            writeMidi (own.getChildFile ("Beat.mid"), 10, { { 36, 100 } });
+            writeMidi (own.getChildFile ("Keys.mid"), 1, { { 60, 80 } });
+            writeSine (own.getChildFile ("Sounds/01 Lo-Fi Kick.wav"));
+            writeSine (own.getChildFile ("Sounds/03 Choir.wav"));
+            own.getChildFile (SomewhereBeat::infoFileName)
+               .replaceWithText (R"j({"app":"Somewhere","format":1,"bpm":100,"swing":0,"patterns":[2],"steps":16,"sender":"Mia (c3d4)","keysSound":"Choir","keysPad":3})j");
+            auto b2 = SomewhereBeat::read (own);
+            log.check (b2.has_value() && b2->keysPad == 2, "keysPad read (1-based)");
+
+            if (b2)
+            {
+                auto f = Project::createProjectFolder (outDir.getChildFile ("Beats"), "Beat Song 3");
+                Project p (engine, f);
+                juce::Array<juce::File> stems;
+                for (auto& s : b2->stems) stems.add (p.importAudioFile (s.file));
+                auto r = SomewhereBeat::build (p.getEdit(), *b2, stems, {}, nullptr, [&p] (const juce::File& x) { return p.importAudioFile (x); });
+                log.check (r.missing.isEmpty() && r.drumsPlay && r.keysPlay, "a beat's own Sounds folder is enough, with nothing else sent");
+            }
+        }
+
+        // Two samples with the same name: the newest
+        writeSound (sender, "Twin", 0);
+        sender.getChildFile ("Twin.somewhere.json").replaceWithText (R"j({"name":"Kick","recordedAt":"2026-11-27T09:00:00Z"})j");
+        sender.getChildFile ("Twin.wav").setLastModificationTime (juce::Time::getCurrentTime());
+        sender.getChildFile ("Kick.somewhere.json").replaceWithText (R"j({"name":"Kick","pad":1,"recordedAt":"2026-11-20T09:00:00Z"})j");
+        log.check (SomewhereBeat::findSound (sender, "Kick", 0).getFileName() == "Twin.wav", "the newest of two same-named sounds");
     }
 
     log.text = "Project audio: " + juce::String (log.failures) + " failure(s)\n" + log.text;

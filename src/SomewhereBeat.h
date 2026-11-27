@@ -19,10 +19,12 @@ namespace elsewhere
             17 Keys Piano.wav               the keys, played by their pad's sound (when there are notes)
             Beat.mid                        the drum steps: pad 1 = C1 (36), soft and hard velocities
             Keys.mid                        the keys as ordinary notes (when there are notes)
-            beat.somewhere.json             tempo, swing, patterns, and keysSound
+            Sounds/01 Kick.wav ...          each pad's own sound (a one-shot), bounced with its settings
+            beat.somewhere.json             tempo, swing, patterns, keysSound and keysPad
 
-    Each pad's own sound (a one-shot) is in the phone's folder beside Beats, with a
-    .somewhere.json that names it.
+    Beats sent before Sounds/ was added have no one-shots of their own: then a pad's sound is
+    found among the samples the phone sent (beside Beats, each with a .somewhere.json that
+    names it), which never include its built-in kit sounds.
 
     Dropping or importing the folder (or the files in it) makes:
       - a drum track playing Beat.mid through Elsewhere Drums, each pad loaded with its sound,
@@ -49,6 +51,7 @@ namespace SomewhereBeat
     {
         juce::File folder;
         juce::String name, keysSound;
+        int keysPad = -1;           // 0-15: the pad whose sound plays the keys
         double bpm = 0.0;
         std::vector<Stem> stems;    // in pad order, the keys last
         juce::File beatMidi, keysMidi;
@@ -97,6 +100,7 @@ namespace SomewhereBeat
         if (b.name.isEmpty()) b.name = folder.getFileName();
         b.bpm = (double) info["bpm"];
         b.keysSound = info["keysSound"].toString();
+        b.keysPad = info.hasProperty ("keysPad") ? (int) info["keysPad"] - 1 : -1;
 
         for (auto& f : folder.findChildFiles (juce::File::findFiles, false, "*.wav"))
         {
@@ -136,6 +140,8 @@ namespace SomewhereBeat
     inline juce::File findSound (const juce::File& senderFolder, const juce::String& name, int pad = -1)
     {
         juce::Array<juce::File> onPad;
+        juce::File named;
+        juce::String namedAt;
 
         for (auto& json : senderFolder.findChildFiles (juce::File::findFiles, false, "*.somewhere.json"))
         {
@@ -149,14 +155,49 @@ namespace SomewhereBeat
 
             auto info = juce::JSON::parse (json);
 
+            // Names needn't be unique: the newest recording wins
             if (name.isNotEmpty() && info["name"].toString() == name)
-                return wav;
+            {
+                if (auto at = info["recordedAt"].toString(); named == juce::File() || at > namedAt)
+                    named = wav, namedAt = at;
+
+                continue;
+            }
 
             if (pad >= 0 && (int) info["pad"] == pad + 1)
                 onPad.add (wav);
         }
 
+        if (named != juce::File())
+            return named;
+
         return onPad.size() == 1 ? onPad.getFirst() : juce::File();
+    }
+
+    /** A pad's sound from the beat's own Sounds folder ("NN <name>.wav"), by pad, else by name. */
+    inline juce::File soundInBeat (const Beat& beat, int pad, const juce::String& name)
+    {
+        auto files = beat.folder.getChildFile ("Sounds").findChildFiles (juce::File::findFiles, false, "*.wav");
+        files.sort();
+
+        for (auto& f : files)
+            if (pad >= 0 && f.getFileName().upToFirstOccurrenceOf (" ", false, false).getIntValue() == pad + 1)
+                return f;
+
+        for (auto& f : files)
+            if (name.isNotEmpty() && f.getFileNameWithoutExtension().fromFirstOccurrenceOf (" ", false, false) == name)
+                return f;
+
+        return {};
+    }
+
+    /** Where a pad's sound comes from: the beat itself, else what the phone sent. */
+    inline juce::File soundFor (const Beat& beat, int pad, const juce::String& name)
+    {
+        if (auto f = soundInBeat (beat, pad, name); f.existsAsFile())
+            return f;
+
+        return findSound (beat.senderFolder(), name, pad);
     }
 
     struct Result
@@ -249,7 +290,7 @@ namespace SomewhereBeat
                             if (s.pad < 0)
                                 continue;
 
-                            if (auto f = findSound (sender, s.sound, s.pad); f.existsAsFile())
+                            if (auto f = soundFor (beat, s.pad, s.sound); f.existsAsFile())
                                 d->setPadSample (s.pad, copy ? copy (f) : f);
                             else
                                 r.missing.add (s.sound), all = false;
@@ -273,7 +314,7 @@ namespace SomewhereBeat
                 {
                     if (auto* sampler = dynamic_cast<te::SamplerPlugin*> (p.get()))
                     {
-                        if (auto f = findSound (sender, beat.keysSound); f.existsAsFile())
+                        if (auto f = soundFor (beat, beat.keysPad, beat.keysSound); f.existsAsFile())
                         {
                             auto local = copy ? copy (f) : f;
 
