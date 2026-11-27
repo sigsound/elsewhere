@@ -6,6 +6,7 @@
 #include "Common.h"
 #include "Mixing.h"
 #include "devices/DrumsDevice.h"
+#include "devices/HazeDevice.h"
 #include "drums/DrumTrack.h"
 
 namespace elsewhere
@@ -24,7 +25,8 @@ namespace elsewhere
             Sounds/01 Kick.wav ...          each sound the beat plays (a one-shot), bounced with its pad's settings
             beat.somewhere.json             tempo, swing, patterns, keysSound, keysPad (the sound most
                                             keys play), keysPads (every one, when there's more than one),
-                                            and "sounds":
+                                            keysSynth (when the keys play a synth: { pad 17, synth "Haze",
+                                            patch, patchName }), and "sounds":
                                             [{ pad (1-based), name, file (relative to the folder) }]
 
     Beats sent before Sounds/ was added have no one-shots of their own: then a pad's sound is
@@ -36,7 +38,8 @@ namespace elsewhere
         so the beat can be edited as MIDI;
       - a MIDI track playing Keys.mid through a Sampler loaded with the keys' sound (pitched
         from C4, as on the phone); keys in several sounds get a track per sound, from its own
-        MIDI file, and play from their stem when there are no such files;
+        MIDI file, and play from their stem when there are no such files; keys played by Haze get
+        Elsewhere Haze, on the same patch;
       - an audio track per stem, exactly as exported.
     The MIDI tracks play when every sound they need was found; then the stems are muted.
     Otherwise the stems play and the MIDI track is muted, so the beat never plays twice.
@@ -60,6 +63,9 @@ namespace SomewhereBeat
         int keysPad = -1;           // 0-15: the pad whose sound plays the keys (most of them)
         std::vector<int> keysPads;  // 0-15: every sound the keys play, when there's more than one
         std::map<int, juce::File> keysMidiBySound;  // pad -> "Keys NN.mid", the notes in that sound
+        int synthPad = -1;          // the keys' synth, as a "pad" after the 16 (16: "Keys 17.mid")
+        juce::String synthName, synthPatchName;
+        int synthPatch = 0;
         std::map<int, juce::File> sounds;   // pad (0-15) -> its one-shot, from "sounds"
         double bpm = 0.0;
         int steps = 0;              // sixteenths
@@ -113,9 +119,18 @@ namespace SomewhereBeat
         b.keysSound = info["keysSound"].toString();
         b.keysPad = info.hasProperty ("keysPad") ? (int) info["keysPad"] - 1 : -1;
 
+        if (auto synth = info["keysSynth"]; synth.isObject() && synth["synth"].toString() == "Haze")
+        {
+            b.synthPad = juce::jlimit (DrumsDevice::numPads, 63, (int) synth["pad"] - 1);
+            b.synthName = "Haze";
+            b.synthPatch = juce::jlimit (0, HazeEngine::patchCount() - 1, (int) synth["patch"]);
+            b.synthPatchName = synth["patchName"].toString().isNotEmpty() ? synth["patchName"].toString()
+                                                                         : juce::String (HazeEngine::patchName (b.synthPatch));
+        }
+
         if (auto* pads = info["keysPads"].getArray())
             for (auto& v : *pads)
-                if (auto pad = (int) v - 1; pad >= 0 && pad < DrumsDevice::numPads && std::find (b.keysPads.begin(), b.keysPads.end(), pad) == b.keysPads.end())
+                if (auto pad = (int) v - 1; pad >= 0 && (pad < DrumsDevice::numPads || pad == b.synthPad) && std::find (b.keysPads.begin(), b.keysPads.end(), pad) == b.keysPads.end())
                 {
                     b.keysPads.push_back (pad);
                     if (auto m = folder.getChildFile ("Keys " + juce::String (pad + 1).paddedLeft ('0', 2) + ".mid"); m.existsAsFile())
@@ -366,7 +381,19 @@ namespace SomewhereBeat
 
             after = track;
 
-            if (auto p = EngineHelpers::insertBuiltInPlugin (*track, te::SamplerPlugin::xmlTypeName, 0))
+            if (pad >= 0 && pad == beat.synthPad)
+            {
+                if (auto p = DeviceRegistry::create (edit, HazeDevice::xmlTypeName))
+                {
+                    track->pluginList.insertPlugin (p, 0, nullptr);
+                    if (auto* haze = dynamic_cast<HazeDevice*> (p.get()))
+                    {
+                        haze->loadPatch (beat.synthPatch, false);   // part of the import
+                        plays = true;
+                    }
+                }
+            }
+            else if (auto p = EngineHelpers::insertBuiltInPlugin (*track, te::SamplerPlugin::xmlTypeName, 0))
             {
                 if (auto* sampler = dynamic_cast<te::SamplerPlugin*> (p.get()))
                 {
@@ -396,6 +423,9 @@ namespace SomewhereBeat
         // A sound's name, from its one-shot ("03 Marimba.wav")
         auto soundName = [&beat] (int pad)
         {
+            if (pad >= 0 && pad == beat.synthPad)
+                return beat.synthName + " " + beat.synthPatchName;
+
             if (pad == beat.keysPad && beat.keysSound.isNotEmpty())
                 return beat.keysSound;
 

@@ -5,6 +5,7 @@
 #include "ProjectAudio.h"
 #include "devices/DeviceBase.h"
 #include "SomewhereBeat.h"
+#include "devices/HazeDevice.h"
 
 namespace elsewhere::ProjectAudioTests
 {
@@ -438,6 +439,57 @@ int run (te::Engine& engine, const juce::File& outDir)
                            && ! r.keysBySound[0]->isMuted (false) && ! r.keysBySound[1]->isMuted (false),
                            "with a file per sound: a Keys track for each sound (" + sounds.joinIntoString (", ") + "), the stem muted");
                 log.check (r.keysBySound.size() == 2 && r.keysBySound[1]->getName().contains ("Marimba"), "each named for its sound");
+            }
+        }
+
+        // Keys played by Haze: alone, and next to a sampled sound
+        {
+            auto importBeat = [&] (const juce::File& folder, const juce::String& song)
+            {
+                auto b = SomewhereBeat::read (folder);
+                auto file = Project::createProjectFolder (outDir.getChildFile ("Beats"), song);
+                auto p = std::make_unique<Project> (engine, file);
+                juce::Array<juce::File> stems;
+                for (auto& s : b->stems) stems.add (p->importAudioFile (s.file));
+                auto r = SomewhereBeat::build (p->getEdit(), *b, stems, {}, nullptr, [&p] (const juce::File& f) { return p->importAudioFile (f); });
+                return std::make_pair (std::move (p), r);
+            };
+            auto hazeOn = [] (te::AudioTrack* t) { return t != nullptr ? t->pluginList.findFirstPluginOfType<HazeDevice>() : nullptr; };
+
+            auto alone = sender.getChildFile ("Beats/2026-11-27 09.00.00 Beat P3 90bpm");
+            writeSine (alone.getChildFile ("17 Keys Haze Marine Layer.wav"));
+            writeMidi (alone.getChildFile ("Keys.mid"), 1, { { 60, 80 } });
+            alone.getChildFile (SomewhereBeat::infoFileName)
+                 .replaceWithText (R"j({"app":"Somewhere","format":1,"bpm":90,"swing":0,"patterns":[1],"steps":16,"sender":"Nick (a1b2)",
+                                       "keysSound":"Haze Marine Layer","keysPad":17,"keysSynth":{"pad":17,"synth":"Haze","patch":5,"patchName":"Marine Layer"},"sounds":[]})j");
+            {
+                auto [p, r] = importBeat (alone, "Haze Alone");
+                auto* haze = hazeOn (r.keys);
+                log.check (haze != nullptr && haze->getPatchIndex() == 5 && ! haze->isPatchModified() && r.keysPlay && r.missing.isEmpty()
+                           && ! r.keys->isMuted (false) && r.stems.getLast()->isMuted (false), "keys played by Haze: an Elsewhere Haze on the same patch, the stem muted");
+            }
+
+            auto both = sender.getChildFile ("Beats/2026-11-27 09.10.00 Beat P4 90bpm");
+            writeSine (both.getChildFile ("17 Keys Haze Pastel Mall.wav"));
+            writeMidi (both.getChildFile ("Keys.mid"), 1, { { 60, 80 }, { 72, 80 } });
+            writeMidi (both.getChildFile ("Keys 03.mid"), 1, { { 72, 80 } });
+            writeMidi (both.getChildFile ("Keys 17.mid"), 1, { { 60, 80 } });
+            writeSine (both.getChildFile ("Sounds/03 Piano.wav"));
+            both.getChildFile (SomewhereBeat::infoFileName)
+                .replaceWithText (R"j({"app":"Somewhere","format":1,"bpm":90,"swing":0,"patterns":[1],"steps":16,"sender":"Nick (a1b2)",
+                                      "keysSound":"Haze Pastel Mall","keysPad":17,"keysPads":[17,3],"keysSynth":{"pad":17,"synth":"Haze","patch":1,"patchName":"Pastel Mall"},
+                                      "sounds":[{"pad":3,"name":"Piano","file":"Sounds/03 Piano.wav"}]})j");
+            {
+                auto [p, r] = importBeat (both, "Haze And Piano");
+                HazeDevice* haze = nullptr;
+                te::SamplerPlugin* piano = nullptr;
+                for (auto* t : r.keysBySound)
+                {
+                    if (auto* h = hazeOn (t)) haze = h;
+                    if (auto* sm = t->pluginList.findFirstPluginOfType<te::SamplerPlugin>()) piano = sm;
+                }
+                log.check (r.keysBySound.size() == 2 && haze != nullptr && haze->getPatchIndex() == 1 && piano != nullptr && r.keysPlay
+                           && r.stems.getLast()->isMuted (false), "Haze next to a sampled sound: a Haze track and a Sampler track, the stem muted");
             }
         }
 

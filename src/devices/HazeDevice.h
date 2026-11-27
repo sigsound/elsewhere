@@ -97,10 +97,12 @@ public:
         return HazeEngine::patchValue (index, ap.paramID.toRawUTF8());
     }
 
-    void loadPatch (int index)
+    /** Sets every control to a patch: as its own undo step, or as part of the one in progress. */
+    void loadPatch (int index, bool ownUndoStep = true)
     {
         index = juce::jlimit (0, (int) patches().size() - 1, index);
-        edit.getUndoManager().beginNewTransaction ("Load Haze patch");
+        if (ownUndoStep)
+            edit.getUndoManager().beginNewTransaction ("Load Haze patch");
         for (auto& p : params)
             p->getParameter().setParameter (patchValue (index, p->getParameter()), juce::sendNotification);
         state.setProperty ("patch", index, &edit.getUndoManager());
