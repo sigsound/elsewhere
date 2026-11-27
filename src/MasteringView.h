@@ -312,7 +312,7 @@ private:
         m.addSeparator();
         m.addItem (missing ? "Find Song..." : "Point to Another Project...", [this, &t] { relink (t); });
         m.addItem ("Render Again", ! missing, false, [this, &t] { album.renderAgain (t); });
-        m.addItem ("Show in " + juce::String (JUCE_MAC ? "Finder" : "Explorer"), ! missing, false, [&t] { Mastering::songFileOf (t).revealToUser(); });
+        m.addItem ("Show in " + fileManagerName(), ! missing, false, [&t] { Mastering::songFileOf (t).revealToUser(); });
         m.addSeparator();
         m.addItem ("Remove from Album", [this, &t] { remove (t); });
         m.showMenuAsync (juce::PopupMenu::Options());
