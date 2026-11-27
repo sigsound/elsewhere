@@ -81,6 +81,114 @@ namespace
         if (pad > 0) o->setProperty ("pad", pad);
         senderFolder.getChildFile (name + ".somewhere.json").replaceWithText (juce::JSON::toString (juce::var (o)));
     }
+
+    //==============================================================================
+    // A beat as the phone renders it, for checking that its MIDI sounds the same as its stems
+    namespace beatRender
+    {
+        inline double rate = 48000.0;      // set to the device's rate, so nothing is resampled
+        constexpr double bpm = 100.0;
+        constexpr int steps = 32;
+
+        int sampleAt (double beat)      { return (int) std::llround (beat * 60.0 / bpm * rate); }
+
+        void writeWav (const juce::File& f, const juce::AudioBuffer<float>& b)
+        {
+            f.getParentDirectory().createDirectory();
+            f.deleteFile();
+            juce::WavAudioFormat wav;
+            auto out = f.createOutputStream();
+            std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (out.get(), rate, (unsigned int) b.getNumChannels(), 24, {}, 0));
+
+            if (w == nullptr)
+                return;
+
+            out.release();
+            w->writeFromAudioSampleBuffer (b, 0, b.getNumSamples());
+        }
+
+        juce::AudioBuffer<float> readWav (const juce::File& f)
+        {
+            juce::AudioFormatManager m;
+            m.registerBasicFormats();
+            juce::AudioBuffer<float> b;
+
+            if (std::unique_ptr<juce::AudioFormatReader> r { m.createReaderFor (f) })
+            {
+                b.setSize ((int) r->numChannels, (int) r->lengthInSamples);
+                r->read (&b, 0, (int) r->lengthInSamples, 0, true, true);
+            }
+
+            return b;
+        }
+
+        // A kick (decaying low sine) or a hat (a burst of noise)
+        juce::AudioBuffer<float> oneShot (bool kick)
+        {
+            juce::AudioBuffer<float> b (2, (int) (rate * (kick ? 0.25 : 0.08)));
+            juce::Random rnd (7);
+
+            for (int i = 0; i < b.getNumSamples(); ++i)
+            {
+                auto t = i / rate;
+                auto v = kick ? 0.6f * (float) (std::sin (juce::MathConstants<double>::twoPi * 55.0 * t) * std::exp (-t / 0.07))
+                              : 0.3f * (rnd.nextFloat() * 2.0f - 1.0f) * (float) std::exp (-t / 0.02);
+                b.setSample (0, i, v);
+                b.setSample (1, i, v);
+            }
+
+            return b;
+        }
+
+        // The phone plays a hit at its velocity / 127, nothing else
+        juce::AudioBuffer<float> stem (const juce::AudioBuffer<float>& one, const std::vector<std::pair<double, int>>& hits)
+        {
+            juce::AudioBuffer<float> b (2, sampleAt (steps / 4.0) + (int) rate);
+            b.clear();
+
+            for (auto [beat, vel] : hits)
+                for (int c = 0; c < 2; ++c)
+                    b.addFrom (c, sampleAt (beat), one, c, 0, juce::jmin (one.getNumSamples(), b.getNumSamples() - sampleAt (beat)), (float) vel / 127.0f);
+
+            return b;
+        }
+
+        juce::AudioBuffer<float> render (te::Edit& edit, juce::Array<te::Track*> tracks, const juce::File& f)
+        {
+            f.deleteFile();
+            te::Renderer::Parameters params (edit);
+            params.destFile = f;
+            params.audioFormat = edit.engine.getAudioFileFormatManager().getWavFormat();
+            params.bitDepth = 32;
+            params.sampleRateForAudio = rate;
+            params.time = { te::TimePosition(), edit.tempoSequence.toTime (te::BeatPosition::fromBeats (steps / 4.0 + 1.0)) };
+            params.usePlugins = true;
+            params.tracksToDo = te::toBitSet (tracks);
+            te::Renderer::renderToFile ("test", params);
+            return readWav (f);
+        }
+
+        double rmsDb (const juce::AudioBuffer<float>& b, int from, int n)
+        {
+            double sum = 0;
+            n = juce::jmin (n, b.getNumSamples() - from);
+            for (int i = from; i < from + n; ++i)
+                sum += juce::square ((double) b.getSample (0, i));
+            return juce::Decibels::gainToDecibels (std::sqrt (sum / juce::jmax (1, n)), -120.0);
+        }
+
+        double correlation (const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b, int from, int n)
+        {
+            double ab = 0, aa = 0, bb = 0;
+            n = juce::jmin (n, juce::jmin (a.getNumSamples(), b.getNumSamples()) - from);
+            for (int i = from; i < from + n; ++i)
+            {
+                double x = a.getSample (0, i), y = b.getSample (0, i);
+                ab += x * y; aa += x * x; bb += y * y;
+            }
+            return aa > 0 && bb > 0 ? ab / std::sqrt (aa * bb) : 0.0;
+        }
+    }
 }
 
 int run (te::Engine& engine, const juce::File& outDir)
@@ -335,6 +443,73 @@ int run (te::Engine& engine, const juce::File& outDir)
         sender.getChildFile ("Twin.wav").setLastModificationTime (juce::Time::getCurrentTime());
         sender.getChildFile ("Kick.somewhere.json").replaceWithText (R"j({"name":"Kick","pad":1,"recordedAt":"2026-11-20T09:00:00Z"})j");
         log.check (SomewhereBeat::findSound (sender, "Kick", 0).getFileName() == "Twin.wav", "the newest of two same-named sounds");
+    }
+
+    // The drum track plays the beat as the phone does: same hits, same levels, hard and soft
+    {
+        using namespace beatRender;
+        if (auto deviceRate = engine.getDeviceManager().getSampleRate(); deviceRate > 0)
+            rate = deviceRate;
+
+        auto folder = outDir.getChildFile ("Inbox/Ana (e5f6)/Beats/2026-11-26 12.00.00 Beat P1 96bpm");
+        std::vector<std::pair<double, int>> kicks, hats;
+
+        for (int b = 0; b < steps / 4; ++b)
+        {
+            kicks.push_back ({ (double) b, b % 2 == 1 ? 56 : 100 });     // soft and hard, as Somewhere writes them
+            hats.push_back ({ b + 0.5, 100 });
+        }
+
+        writeWav (folder.getChildFile ("01 Kick.wav"), stem (oneShot (true), kicks));
+        writeWav (folder.getChildFile ("04 Hat.wav"), stem (oneShot (false), hats));
+        writeWav (folder.getChildFile ("Sounds/01 Kick.wav"), oneShot (true));
+        writeWav (folder.getChildFile ("Sounds/04 Hat.wav"), oneShot (false));
+
+        {
+            juce::MidiMessageSequence seq;
+            for (auto [beat, vel] : kicks) { seq.addEvent (juce::MidiMessage::noteOn (10, 36, (juce::uint8) vel), beat * 96.0); seq.addEvent (juce::MidiMessage::noteOff (10, 36), beat * 96.0 + 12); }
+            for (auto [beat, vel] : hats)  { seq.addEvent (juce::MidiMessage::noteOn (10, 39, (juce::uint8) vel), beat * 96.0); seq.addEvent (juce::MidiMessage::noteOff (10, 39), beat * 96.0 + 12); }
+            seq.sort();
+            seq.updateMatchedPairs();
+            juce::MidiFile mf;
+            mf.setTicksPerQuarterNote (96);
+            mf.addTrack (seq);
+            juce::FileOutputStream out (folder.getChildFile ("Beat.mid"));
+            mf.writeTo (out);
+        }
+
+        folder.getChildFile (SomewhereBeat::infoFileName).replaceWithText (R"j({"app":"Somewhere","format":1,"bpm":100,"swing":0,"patterns":[1],"steps":32,"sender":"Ana (e5f6)",
+            "sounds":[{"pad":1,"name":"Kick","file":"Sounds/01 Kick.wav"},{"pad":4,"name":"Hat","file":"Sounds/04 Hat.wav"}]})j");
+
+        auto beat = SomewhereBeat::read (folder);
+        auto f = Project::createProjectFolder (outDir.getChildFile ("Beats"), "Rendered Beat");
+        Project p (engine, f);
+        juce::Array<juce::File> stems;
+        if (beat) for (auto& st : beat->stems) stems.add (p.importAudioFile (st.file));
+        auto r = beat ? SomewhereBeat::build (p.getEdit(), *beat, stems, {}, nullptr, [&p] (const juce::File& x) { return p.importAudioFile (x); })
+                      : SomewhereBeat::Result();
+        log.check (r.drums != nullptr && r.drumsPlay && r.stems.size() == 2, "the rendered beat imports as MIDI");
+
+        if (r.drums != nullptr && r.stems.size() == 2)
+        {
+            for (auto t : te::getAudioTracks (p.getEdit()))
+                t->setMute (false);
+
+            auto midi = render (p.getEdit(), { r.drums }, outDir.getChildFile ("beat-midi.wav"));
+            auto audio = render (p.getEdit(), { r.stems[0], r.stems[1] }, outDir.getChildFile ("beat-stems.wav"));
+            double worstDb = 0.0, worstCorr = 1.0;
+
+            for (auto& hits : { kicks, hats })
+                for (auto [b, vel] : hits)
+                {
+                    auto from = sampleAt (b), n = (int) (rate * 0.05);
+                    worstDb = std::max (worstDb, std::abs (rmsDb (midi, from, n) - rmsDb (audio, from, n)));
+                    worstCorr = std::min (worstCorr, correlation (midi, audio, from, n));
+                }
+
+            log.check (worstDb < 0.5, "every hit within 0.5 dB of the stems, soft ones too (worst " + juce::String (worstDb, 2) + " dB)");
+            log.check (worstCorr > 0.97, "every hit lines up with the stems (worst correlation " + juce::String (worstCorr, 3) + ")");
+        }
     }
 
     log.text = "Project audio: " + juce::String (log.failures) + " failure(s)\n" + log.text;

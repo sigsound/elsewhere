@@ -311,12 +311,12 @@ namespace SomewhereBeat
                     r.drums->pluginList.insertPlugin (p, 0, nullptr);
                     bool all = true;
 
-                    // As a new drum track: kick + crash together can reach full scale
-                    if (auto vol = p->getAutomatableParameterByID ("volume"))
-                        vol->setParameter (-6.0f, juce::sendNotification);
+
 
                     if (auto* d = dynamic_cast<DrumsDevice*> (p.get()))
                     {
+                        d->setPlainVelocity (true);     // soft and hard steps as loud as on the phone
+
                         for (auto& s : beat.stems)
                         {
                             if (s.pad < 0)
