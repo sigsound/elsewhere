@@ -12,14 +12,24 @@
 #ifndef NOMINMAX
  #define NOMINMAX
 #endif
+#include <winsock2.h>
 #include <windows.h>
 #include <windns.h>
 #include <string>
 
 #pragma comment(lib, "dnsapi.lib")
+#pragma comment(lib, "ws2_32.lib")
 
 namespace elsewhere::somewherelink
 {
+    bool canWrite (int socket, int timeoutMs)
+    {
+        WSAPOLLFD p {};
+        p.fd = (SOCKET) socket;
+        p.events = POLLWRNORM;
+        return WSAPoll (&p, 1, timeoutMs) == 1 && (p.revents & POLLWRNORM) != 0;
+    }
+
     namespace
     {
         struct Registration
