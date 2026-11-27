@@ -19,6 +19,22 @@ namespace elsewhere::somewherelink
     // SomewhereLinkWindows.cpp: DNS-SD through windns.h, kept out of this header
     void* advertise (int port, const std::string& projectName);
     void unadvertise (void* handle);
+    bool canWrite (int socket, int timeoutMs);
+}
+#endif
+
+#if ! JUCE_WINDOWS
+ #include <poll.h>
+namespace elsewhere::somewherelink
+{
+    /** Whether a socket can take a write within the time. Asked of the socket itself: JUCE's
+        waitUntilReady shares a lock with read(), which the connection's reader thread holds the
+        whole time it waits for the phone, so it always says no while the phone is quiet. */
+    inline bool canWrite (int socket, int timeoutMs)
+    {
+        pollfd p { socket, POLLOUT, 0 };
+        return ::poll (&p, 1, timeoutMs) == 1 && (p.revents & POLLOUT) != 0;
+    }
 }
 #endif
 
@@ -515,7 +531,7 @@ private:
             // A phone that's asleep or out of range stops reading, and once the buffers fill a
             // write waits for it: that's the whole app waiting, since this is the message thread.
             // If it can't take a write now, drop the connection; the phone connects again
-            if (socket->waitUntilReady (false, 50) != 1)
+            if (! somewherelink::canWrite (socket->getRawSocketHandle(), 50))
             {
                 socket->close();
                 return;
