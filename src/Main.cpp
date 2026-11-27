@@ -34,6 +34,7 @@
 #include "PerfTest.h"
 #include "RecordTests.h"
 #include "Showcase.h"
+#include "devices/SomewhereControlDevice.h"
 
 namespace elsewhere
 {
@@ -504,6 +505,8 @@ public:
         {
             if (commandLine.contains ("--device-shots"))
                 juce::Timer::callAfterDelay (2500, [this] { takeDeviceShots (showcaseDir()); });
+            else if (commandLine.contains ("--release-shots"))
+                juce::Timer::callAfterDelay (2500, [this] { takeReleaseShots (showcaseDir()); });
             else
                 juce::Timer::callAfterDelay (2500, [this] { takeShowcase (showcaseDir()); });
             return;
@@ -1337,6 +1340,101 @@ private:
             juce::Timer::callAfterDelay (900, [run, i] { (*run) (i + 1); });
         };
         (*run) (0);
+    }
+
+    /** Pictures of newer features for release notes, in the dark theme: Somewhere Control in the
+        keys track's chain, then an album of three songs (copies of the demo song) in a mastering
+        project once every song has rendered. Run with --showcase <dir> --release-shots --no-audio. */
+    void takeReleaseShots (juce::File dir)
+    {
+        dir.createDirectory();
+        auto* mc = mainComponent;
+        if (mc == nullptr)
+            return quit();
+
+        switchTheme (Themes::dark, true);
+        auto tracks = std::make_shared<Showcase::Tracks> (Showcase::build (*mc));
+
+        auto save = [this, dir] (const juce::String& name)
+        {
+            auto* content = window->getContentComponent();
+            auto img = content->createComponentSnapshot (content->getLocalBounds(), true, 2.0f);
+            juce::FileOutputStream out (dir.getChildFile (name + ".png"));
+            out.setPosition (0); out.truncate();
+            juce::PNGImageFormat().writeImageToStream (img, out);
+        };
+
+        // Somewhere Control first in the vocal's chain, on Delay, partway across the pad
+        auto& vocal = *tracks->vocal;
+        if (auto sc = DeviceRegistry::create (vocal.edit, SomewhereControlDevice::xmlTypeName))
+        {
+            vocal.pluginList.insertPlugin (sc, 0, nullptr);
+            if (auto* d = dynamic_cast<SomewhereControlDevice*> (sc.get()))
+            {
+                d->effect.param().setParameter (1.0f, juce::sendNotification);
+                d->x.param().setParameter (0.62f, juce::sendNotification);
+                d->y.param().setParameter (0.7f, juce::sendNotification);
+            }
+        }
+        Showcase::clearInputs (mc->getProject().getEdit());
+        auto& vs = mc->getViewState();
+        vs.selectionManager.deselectAll();
+        vs.focusTrack (&vocal);
+        vs.detailMode = EditViewState::DetailMode::devices;
+        mc->showView (ViewLayout::MainView::arrangement, true);
+        mc->showWholeArrangement();
+        vs.sendChangeMessage();
+
+        juce::Timer::callAfterDelay (1200, [this, save, dir]
+        {
+            save ("somewhere-control");
+
+            // Three songs: the demo song under three names, and an album of them
+            auto* m = mainComponent;
+            m->getProject().save (false);
+            auto songFolder = m->getProject().getFolder();
+            auto songs = dir.getChildFile ("songs");
+            songs.deleteRecursively();
+            juce::Array<juce::File> files;
+            for (auto name : { "Night Drive", "Low Tide", "Paper Moon" })
+            {
+                auto folder = songs.getChildFile (name);
+                songFolder.copyDirectoryTo (folder);
+                auto from = folder.getChildFile (m->getProject().getEditFile().getFileName());
+                auto to = folder.getChildFile (juce::String (name) + from.getFileExtension());
+                if (from != to) from.moveFileTo (to);
+                files.add (to);
+            }
+
+            auto albumFile = Mastering::createProject (*engine, dir.getChildFile ("album"), "Coastline");
+            {
+                Project album (*engine, albumFile);
+                for (auto& f : files)
+                    Mastering::addSong (album.getEdit(), f);
+                album.save (false);
+            }
+            loadProjectNow (albumFile, false);
+
+            // Wait for every song to render, then take the album
+            auto tries = std::make_shared<int> (0);
+            auto wait = std::make_shared<std::function<void()>>();
+            *wait = [this, save, tries, wait]
+            {
+                auto* mm = mainComponent;
+                bool done = mm != nullptr;
+                if (done)
+                    for (auto* t : Mastering::getSongs (mm->getProject().getEdit()))
+                        done = done && Mastering::clipOf (*t) != nullptr;
+
+                if (done || ++*tries > 180)
+                {
+                    juce::Timer::callAfterDelay (1500, [save] { save ("mastering-album"); quit(); });
+                    return;
+                }
+                juce::Timer::callAfterDelay (1000, [wait] { (*wait)(); });
+            };
+            juce::Timer::callAfterDelay (1000, [wait] { (*wait)(); });
+        });
     }
 
     /** <dir>/device_<type>.png (and _light) for each built-in device as the chain shows it, at the
