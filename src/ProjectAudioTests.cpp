@@ -305,11 +305,14 @@ int run (te::Engine& engine, const juce::File& outDir)
             writeMidi (own.getChildFile ("Beat.mid"), 10, { { 36, 100 } });
             writeMidi (own.getChildFile ("Keys.mid"), 1, { { 60, 80 } });
             writeSine (own.getChildFile ("Sounds/01 Lo-Fi Kick.wav"));
-            writeSine (own.getChildFile ("Sounds/03 Choir.wav"));
+            writeSine (own.getChildFile ("Sounds/03 Choir_.wav"));     // a safe name that differs from the sound's
             own.getChildFile (SomewhereBeat::infoFileName)
-               .replaceWithText (R"j({"app":"Somewhere","format":1,"bpm":100,"swing":0,"patterns":[2],"steps":16,"sender":"Mia (c3d4)","keysSound":"Choir","keysPad":3})j");
+               .replaceWithText (R"j({"app":"Somewhere","format":1,"bpm":100,"swing":0,"patterns":[2],"steps":16,"sender":"Mia (c3d4)","keysSound":"Choir","keysPad":3,
+                                   "sounds":[{"pad":1,"name":"Lo-Fi Kick","file":"Sounds/01 Lo-Fi Kick.wav"},{"pad":3,"name":"Choir","file":"Sounds/03 Choir_.wav"},
+                                             {"pad":2,"name":"Escape","file":"../../../Kick.wav"}]})j");
             auto b2 = SomewhereBeat::read (own);
             log.check (b2.has_value() && b2->keysPad == 2, "keysPad read (1-based)");
+            log.check (b2.has_value() && b2->sounds.size() == 2 && b2->sounds[2].getFileName() == "03 Choir_.wav", "\"sounds\" read, files kept inside the beat folder");
 
             if (b2)
             {

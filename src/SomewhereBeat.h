@@ -19,8 +19,9 @@ namespace elsewhere
             17 Keys Piano.wav               the keys, played by their pad's sound (when there are notes)
             Beat.mid                        the drum steps: pad 1 = C1 (36), soft and hard velocities
             Keys.mid                        the keys as ordinary notes (when there are notes)
-            Sounds/01 Kick.wav ...          each pad's own sound (a one-shot), bounced with its settings
-            beat.somewhere.json             tempo, swing, patterns, keysSound and keysPad
+            Sounds/01 Kick.wav ...          each sound the beat plays (a one-shot), bounced with its pad's settings
+            beat.somewhere.json             tempo, swing, patterns, keysSound, keysPad, and "sounds":
+                                            [{ pad (1-based), name, file (relative to the folder) }]
 
     Beats sent before Sounds/ was added have no one-shots of their own: then a pad's sound is
     found among the samples the phone sent (beside Beats, each with a .somewhere.json that
@@ -52,6 +53,7 @@ namespace SomewhereBeat
         juce::File folder;
         juce::String name, keysSound;
         int keysPad = -1;           // 0-15: the pad whose sound plays the keys
+        std::map<int, juce::File> sounds;   // pad (0-15) -> its one-shot, from "sounds"
         double bpm = 0.0;
         std::vector<Stem> stems;    // in pad order, the keys last
         juce::File beatMidi, keysMidi;
@@ -101,6 +103,12 @@ namespace SomewhereBeat
         b.bpm = (double) info["bpm"];
         b.keysSound = info["keysSound"].toString();
         b.keysPad = info.hasProperty ("keysPad") ? (int) info["keysPad"] - 1 : -1;
+
+        if (auto* list = info["sounds"].getArray())
+            for (auto& e : *list)
+                if (auto pad = (int) e["pad"] - 1; pad >= 0 && pad < DrumsDevice::numPads && e["file"].toString().isNotEmpty())
+                    if (auto f = folder.getChildFile (e["file"].toString()); f.existsAsFile() && f.isAChildOf (folder))
+                        b.sounds[pad] = f;
 
         for (auto& f : folder.findChildFiles (juce::File::findFiles, false, "*.wav"))
         {
@@ -177,6 +185,9 @@ namespace SomewhereBeat
     /** A pad's sound from the beat's own Sounds folder ("NN <name>.wav"), by pad, else by name. */
     inline juce::File soundInBeat (const Beat& beat, int pad, const juce::String& name)
     {
+        if (auto it = beat.sounds.find (pad); it != beat.sounds.end())
+            return it->second;
+
         auto files = beat.folder.getChildFile ("Sounds").findChildFiles (juce::File::findFiles, false, "*.wav");
         files.sort();
 
