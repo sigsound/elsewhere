@@ -4,6 +4,7 @@
 #pragma once
 
 #include "SynthPanel.h"
+#include "MonoEngine.h"
 
 namespace elsewhere
 {
@@ -30,8 +31,8 @@ namespace elsewhere
       Oscillator B is hard-synced to oscillator A; the filter envelope sweeps B's pitch for
       the tearing sync sound. Pulse width, ADSR filter and amp envelopes, and an LFO.
 
-    The voice runs at four times the sample rate (oversampled), so the saturating filter, the
-    feedback and hard sync stay clean of aliasing.
+    The sound is MonoEngine's: the voice runs at four times the sample rate, so the saturating
+    filter, the feedback and hard sync stay clean of aliasing.
 
     Character is the analog-ness. Every model gets a warm, slightly asymmetric output stage;
     Seventy also gets the oscillators' slightly curved ramps, the droop of their squares (AC
@@ -44,7 +45,7 @@ class MonoDevice : public ElsewhereDevice
 public:
     static constexpr const char* xmlTypeName = "elsewhereMono";
 
-    enum Model { seventy, acid, syncLead, numModels };
+    enum Model { seventy = MonoEngine::seventy, acid = MonoEngine::acid, syncLead = MonoEngine::syncLead, numModels = MonoEngine::numModels };
 
     static juce::StringArray modelNames()       { return { "Seventy", "Acid", "Sync Lead" }; }
     static juce::StringArray rangeNames()       { return { "LO", "32'", "16'", "8'", "4'", "2'" }; }
@@ -55,8 +56,10 @@ public:
     /** Seventy: oscillators 1 and 2 have the "shark tooth" (tri-saw); oscillator 3 a reverse saw instead. */
     static std::vector<SynthCore::Wave> wavesFor (int osc)
     {
-        using W = SynthCore::Wave;
-        return { W::triangle, osc == 2 ? W::reverseSaw : W::shark, W::saw, W::square, W::widePulse, W::narrowPulse };
+        std::vector<SynthCore::Wave> result;
+        for (int i = 0; i < 6; ++i)
+            result.push_back (MonoEngine::waveFor (osc, i));
+        return result;
     }
 
     static juce::StringArray waveNames (int osc)
@@ -72,101 +75,113 @@ public:
         auto cents = [] (float v) { return (v >= 0.0f ? "+" : "") + juce::String (juce::roundToInt (v)) + " ct"; };
         auto pick = [] (juce::StringArray names) { return [names] (float v) { return names[juce::jlimit (0, names.size() - 1, juce::roundToInt (v))]; }; };
         auto timeRange = skewed (0.001f, 10.0f, 0.4f);
+        const MonoEngine::Params d;     // the defaults
 
-        model = addParameter ("model", "Model", (float) seventy, stepped (0, numModels - 1), pick (modelNames()));
+        model = addParameter ("model", "Model", d.model, stepped (0, numModels - 1), pick (modelNames()));
 
         // ---- Seventy -------------------------------------------------------------
-        tune      = addParameter ("tune", "Tune", 0.0f, { -100.0f, 100.0f }, cents);
-        glide     = addParameter ("glide", "Glide", 0.0f, skewed (0.0f, 5.0f, 0.3f), secs);
-        modMix    = addParameter ("modmix", "Mod Mix", 0.0f, { 0.0f, 100.0f },
+        tune      = addParameter ("tune", "Tune", d.tune, { -100.0f, 100.0f }, cents);
+        glide     = addParameter ("glide", "Glide", d.glide, skewed (0.0f, 5.0f, 0.3f), secs);
+        modMix    = addParameter ("modmix", "Mod Mix", d.modMix, { 0.0f, 100.0f },
                                   [] (float v) { return v < 1.0f ? juce::String ("Osc 3") : v > 99.0f ? juce::String ("Noise") : juce::String (juce::roundToInt (v)) + "% noise"; });
-        modAmount = addParameter ("modamt", "Mod Amount", 0.0f, { 0.0f, 100.0f }, percentText);
-        oscMod    = addParameter ("oscmod", "Osc Mod", 0.0f, stepped (0, 1), onOffText);
-        filterMod = addParameter ("filtmod", "Filter Mod", 0.0f, stepped (0, 1), onOffText);
+        modAmount = addParameter ("modamt", "Mod Amount", d.modAmount, { 0.0f, 100.0f }, percentText);
+        oscMod    = addParameter ("oscmod", "Osc Mod", d.oscMod, stepped (0, 1), onOffText);
+        filterMod = addParameter ("filtmod", "Filter Mod", d.filterMod, stepped (0, 1), onOffText);
 
+        const float rangeD[] = { d.o1range, d.o2range, d.o3range }, waveD[] = { d.o1wave, d.o2wave, d.o3wave }, freqD[] = { 0.0f, d.o2freq, d.o3freq };
         for (int i = 0; i < 3; ++i)
         {
             auto& o = oscs[(size_t) i];
             const auto id = "o" + juce::String (i + 1), nm = "Osc " + juce::String (i + 1) + " ";
-            o.range = addParameter (id + "range", nm + "Range", i == 2 ? 2.0f : 3.0f, stepped (0, 5), pick (rangeNames()));
-            o.wave  = addParameter (id + "wave", nm + "Wave", 2.0f, stepped (0, 5), pick (waveNames (i)));
+            o.range = addParameter (id + "range", nm + "Range", rangeD[i], stepped (0, 5), pick (rangeNames()));
+            o.wave  = addParameter (id + "wave", nm + "Wave", waveD[i], stepped (0, 5), pick (waveNames (i)));
             if (i > 0)
-                o.freq = addParameter (id + "freq", nm + "Frequency", i == 1 ? 0.08f : -0.06f, { -7.0f, 7.0f }, semis);
+                o.freq = addParameter (id + "freq", nm + "Frequency", freqD[i], { -7.0f, 7.0f }, semis);
         }
-        osc3Key = addParameter ("o3key", "Osc 3 Keyboard", 1.0f, stepped (0, 1), onOffText);
+        osc3Key = addParameter ("o3key", "Osc 3 Keyboard", d.osc3Key, stepped (0, 1), onOffText);
 
+        const float mixD[] = { d.m1, d.m2, d.m3 }, mixOnD[] = { d.m1on, d.m2on, d.m3on };
         for (int i = 0; i < 3; ++i)
         {
             const auto id = "m" + juce::String (i + 1);
-            mix[(size_t) i]   = addParameter (id, "Osc " + juce::String (i + 1) + " Level", i == 0 ? 7.0f : i == 1 ? 6.0f : 0.0f, { 0.0f, 10.0f }, tenths);
-            mixOn[(size_t) i] = addParameter (id + "on", "Osc " + juce::String (i + 1) + " On", i < 2 ? 1.0f : 0.0f, stepped (0, 1), onOffText);
+            mix[(size_t) i]   = addParameter (id, "Osc " + juce::String (i + 1) + " Level", mixD[i], { 0.0f, 10.0f }, tenths);
+            mixOn[(size_t) i] = addParameter (id + "on", "Osc " + juce::String (i + 1) + " On", mixOnD[i], stepped (0, 1), onOffText);
         }
-        feedback    = addParameter ("fb", "Feedback", 0.0f, { 0.0f, 10.0f }, tenths);
-        feedbackOn  = addParameter ("fbon", "Feedback On", 0.0f, stepped (0, 1), onOffText);
-        noise       = addParameter ("noise", "Noise Level", 0.0f, { 0.0f, 10.0f }, tenths);
-        noiseOn     = addParameter ("noiseon", "Noise On", 0.0f, stepped (0, 1), onOffText);
-        noiseColour = addParameter ("noisecol", "Noise Colour", 0.0f, stepped (0, 1), pick ({ "White", "Pink" }));
+        feedback    = addParameter ("fb", "Feedback", d.feedback, { 0.0f, 10.0f }, tenths);
+        feedbackOn  = addParameter ("fbon", "Feedback On", d.feedbackOn, stepped (0, 1), onOffText);
+        noise       = addParameter ("noise", "Noise Level", d.noise, { 0.0f, 10.0f }, tenths);
+        noiseOn     = addParameter ("noiseon", "Noise On", d.noiseOn, stepped (0, 1), onOffText);
+        noiseColour = addParameter ("noisecol", "Noise Colour", d.noiseColour, stepped (0, 1), pick ({ "White", "Pink" }));
 
-        cutoff   = addParameter ("cutoff", "Cutoff", 1200.0f, freqRange (20.0f, 20000.0f), hzText);
-        emphasis = addParameter ("emph", "Emphasis", 2.0f, { 0.0f, 10.0f }, tenths);
-        contour  = addParameter ("contour", "Contour Amount", 5.0f, { 0.0f, 10.0f }, tenths);
-        keyTrack = addParameter ("keytrack", "Keyboard Control", 1.0f, stepped (0, 3), pick (keyTrackNames()));
-        fAttack  = addParameter ("fa", "Filter Attack", 0.005f, timeRange, secs);
-        fDecay   = addParameter ("fd", "Filter Decay", 0.6f, timeRange, secs);
-        fSustain = addParameter ("fs", "Filter Sustain", 3.0f, { 0.0f, 10.0f }, tenths);
+        cutoff   = addParameter ("cutoff", "Cutoff", d.cutoff, freqRange (20.0f, 20000.0f), hzText);
+        emphasis = addParameter ("emph", "Emphasis", d.emphasis, { 0.0f, 10.0f }, tenths);
+        contour  = addParameter ("contour", "Contour Amount", d.contour, { 0.0f, 10.0f }, tenths);
+        keyTrack = addParameter ("keytrack", "Keyboard Control", d.keyTrack, stepped (0, 3), pick (keyTrackNames()));
+        fAttack  = addParameter ("fa", "Filter Attack", d.fAttack, timeRange, secs);
+        fDecay   = addParameter ("fd", "Filter Decay", d.fDecay, timeRange, secs);
+        fSustain = addParameter ("fs", "Filter Sustain", d.fSustain, { 0.0f, 10.0f }, tenths);
 
-        aAttack  = addParameter ("aa", "Attack", 0.003f, timeRange, secs);
-        aDecay   = addParameter ("ad", "Decay", 0.6f, timeRange, secs);
-        aSustain = addParameter ("as", "Sustain", 8.0f, { 0.0f, 10.0f }, tenths);
-        release  = addParameter ("release", "Release", 1.0f, stepped (0, 1),
+        aAttack  = addParameter ("aa", "Attack", d.aAttack, timeRange, secs);
+        aDecay   = addParameter ("ad", "Decay", d.aDecay, timeRange, secs);
+        aSustain = addParameter ("as", "Sustain", d.aSustain, { 0.0f, 10.0f }, tenths);
+        release  = addParameter ("release", "Release", d.release, stepped (0, 1),
                                  [] (float v) { return v > 0.5f ? juce::String ("Follows decay") : juce::String ("Short"); });
 
         // ---- Acid ----------------------------------------------------------------
-        acWave     = addParameter ("acwave", "Acid Wave", 0.0f, stepped (0, 1), pick ({ "Sawtooth", "Square" }));
-        acTune     = addParameter ("actune", "Acid Tune", 0.0f, { -12.0f, 12.0f }, semis);
-        acCutoff   = addParameter ("accutoff", "Acid Cutoff", 500.0f, freqRange (60.0f, 8000.0f), hzText);
-        acRes      = addParameter ("acres", "Acid Resonance", 7.0f, { 0.0f, 10.0f }, tenths);
-        acEnvMod   = addParameter ("acenv", "Env Mod", 5.0f, { 0.0f, 10.0f }, tenths);
-        acDecay    = addParameter ("acdecay", "Acid Decay", 0.5f, skewed (0.1f, 3.0f, 0.6f), secs);
-        acAccent   = addParameter ("acaccent", "Accent", 6.0f, { 0.0f, 10.0f }, tenths);
-        acSlide    = addParameter ("acslide", "Slide Time", 0.06f, skewed (0.01f, 0.5f, 0.08f), secs);
-        acDist     = addParameter ("acdist", "Distortion", 0.0f, { 0.0f, 100.0f }, percentText);
+        acWave     = addParameter ("acwave", "Acid Wave", d.acWave, stepped (0, 1), pick ({ "Sawtooth", "Square" }));
+        acTune     = addParameter ("actune", "Acid Tune", d.acTune, { -12.0f, 12.0f }, semis);
+        acCutoff   = addParameter ("accutoff", "Acid Cutoff", d.acCutoff, freqRange (60.0f, 8000.0f), hzText);
+        acRes      = addParameter ("acres", "Acid Resonance", d.acRes, { 0.0f, 10.0f }, tenths);
+        acEnvMod   = addParameter ("acenv", "Env Mod", d.acEnvMod, { 0.0f, 10.0f }, tenths);
+        acDecay    = addParameter ("acdecay", "Acid Decay", d.acDecay, skewed (0.1f, 3.0f, 0.6f), secs);
+        acAccent   = addParameter ("acaccent", "Accent", d.acAccent, { 0.0f, 10.0f }, tenths);
+        acSlide    = addParameter ("acslide", "Slide Time", d.acSlide, skewed (0.01f, 0.5f, 0.08f), secs);
+        acDist     = addParameter ("acdist", "Distortion", d.acDist, { 0.0f, 100.0f }, percentText);
 
         // ---- Sync Lead -----------------------------------------------------------
-        syAWave    = addParameter ("syawave", "Osc A Wave", 0.0f, stepped (0, 1), pick ({ "Sawtooth", "Pulse" }));
-        syWidth    = addParameter ("sywidth", "Pulse Width", 35.0f, { 5.0f, 50.0f }, percentText);
-        syBWave    = addParameter ("sybwave", "Osc B Wave", 0.0f, stepped (0, 2), pick ({ "Sawtooth", "Pulse", "Triangle" }));
-        syBPitch   = addParameter ("sybpitch", "Osc B Pitch", 7.0f, { 0.0f, 36.0f }, semis);
-        sySync     = addParameter ("sysync", "Sync", 1.0f, stepped (0, 1), onOffText);
-        syEnvToB   = addParameter ("syenvb", "Env to B Pitch", 18.0f, { 0.0f, 48.0f }, semis);
-        syMixA     = addParameter ("symixa", "Osc A Level", 5.0f, { 0.0f, 10.0f }, tenths);
-        syMixB     = addParameter ("symixb", "Osc B Level", 8.0f, { 0.0f, 10.0f }, tenths);
-        syNoise    = addParameter ("synoise", "Sync Noise", 0.0f, { 0.0f, 10.0f }, tenths);
-        syCutoff   = addParameter ("sycutoff", "Sync Cutoff", 2500.0f, freqRange (20.0f, 20000.0f), hzText);
-        syRes      = addParameter ("syres", "Sync Resonance", 2.0f, { 0.0f, 10.0f }, tenths);
-        syEnvAmt   = addParameter ("syenv", "Filter Env", 4.0f, { 0.0f, 10.0f }, tenths);
-        syKey      = addParameter ("sykey", "Sync Key Track", 2.0f, stepped (0, 3), pick (keyTrackNames()));
-        syFA = addParameter ("syfa", "Filter Attack", 0.002f, timeRange, secs);
-        syFD = addParameter ("syfd", "Filter Decay", 0.9f, timeRange, secs);
-        syFS = addParameter ("syfs", "Filter Sustain", 2.0f, { 0.0f, 10.0f }, tenths);
-        syFR = addParameter ("syfr", "Filter Release", 0.4f, timeRange, secs);
-        syAA = addParameter ("syaa", "Amp Attack", 0.003f, timeRange, secs);
-        syAD = addParameter ("syad", "Amp Decay", 0.5f, timeRange, secs);
-        syAS = addParameter ("syas", "Amp Sustain", 8.0f, { 0.0f, 10.0f }, tenths);
-        syAR = addParameter ("syar", "Amp Release", 0.3f, timeRange, secs);
-        syLfoRate  = addParameter ("sylforate", "LFO Rate", 5.0f, skewed (0.05f, 20.0f, 3.0f), [] (float v) { return juce::String (v, 2) + " Hz"; });
-        syLfoAmt   = addParameter ("sylfoamt", "LFO Amount", 0.0f, { 0.0f, 100.0f }, percentText);
-        syLfoDest  = addParameter ("sylfodest", "LFO Target", 0.0f, stepped (0, 3), pick (lfoDestNames()));
+        syAWave    = addParameter ("syawave", "Osc A Wave", d.syAWave, stepped (0, 1), pick ({ "Sawtooth", "Pulse" }));
+        syWidth    = addParameter ("sywidth", "Pulse Width", d.syWidth, { 5.0f, 50.0f }, percentText);
+        syBWave    = addParameter ("sybwave", "Osc B Wave", d.syBWave, stepped (0, 2), pick ({ "Sawtooth", "Pulse", "Triangle" }));
+        syBPitch   = addParameter ("sybpitch", "Osc B Pitch", d.syBPitch, { 0.0f, 36.0f }, semis);
+        sySync     = addParameter ("sysync", "Sync", d.sySync, stepped (0, 1), onOffText);
+        syEnvToB   = addParameter ("syenvb", "Env to B Pitch", d.syEnvToB, { 0.0f, 48.0f }, semis);
+        syMixA     = addParameter ("symixa", "Osc A Level", d.syMixA, { 0.0f, 10.0f }, tenths);
+        syMixB     = addParameter ("symixb", "Osc B Level", d.syMixB, { 0.0f, 10.0f }, tenths);
+        syNoise    = addParameter ("synoise", "Sync Noise", d.syNoise, { 0.0f, 10.0f }, tenths);
+        syCutoff   = addParameter ("sycutoff", "Sync Cutoff", d.syCutoff, freqRange (20.0f, 20000.0f), hzText);
+        syRes      = addParameter ("syres", "Sync Resonance", d.syRes, { 0.0f, 10.0f }, tenths);
+        syEnvAmt   = addParameter ("syenv", "Filter Env", d.syEnvAmt, { 0.0f, 10.0f }, tenths);
+        syKey      = addParameter ("sykey", "Sync Key Track", d.syKey, stepped (0, 3), pick (keyTrackNames()));
+        syFA = addParameter ("syfa", "Filter Attack", d.syFA, timeRange, secs);
+        syFD = addParameter ("syfd", "Filter Decay", d.syFD, timeRange, secs);
+        syFS = addParameter ("syfs", "Filter Sustain", d.syFS, { 0.0f, 10.0f }, tenths);
+        syFR = addParameter ("syfr", "Filter Release", d.syFR, timeRange, secs);
+        syAA = addParameter ("syaa", "Amp Attack", d.syAA, timeRange, secs);
+        syAD = addParameter ("syad", "Amp Decay", d.syAD, timeRange, secs);
+        syAS = addParameter ("syas", "Amp Sustain", d.syAS, { 0.0f, 10.0f }, tenths);
+        syAR = addParameter ("syar", "Amp Release", d.syAR, timeRange, secs);
+        syLfoRate  = addParameter ("sylforate", "LFO Rate", d.syLfoRate, skewed (0.05f, 20.0f, 3.0f), [] (float v) { return juce::String (v, 2) + " Hz"; });
+        syLfoAmt   = addParameter ("sylfoamt", "LFO Amount", d.syLfoAmt, { 0.0f, 100.0f }, percentText);
+        syLfoDest  = addParameter ("sylfodest", "LFO Target", d.syLfoDest, stepped (0, 3), pick (lfoDestNames()));
 
         // ---- Output (all models) -------------------------------------------------
-        volume   = addParameter ("volume", "Volume", -6.0f, { -60.0f, 6.0f }, dbText);
-        drive    = addParameter ("drive", "Drive", 15.0f, { 0.0f, 100.0f }, percentText);
-        drift    = addParameter ("drift", "Drift", 25.0f, { 0.0f, 100.0f }, percentText);
-        velocity = addParameter ("vel", "Velocity", 0.0f, { 0.0f, 100.0f }, percentText);
-        bendRange = addParameter ("bend", "Bend Range", 2.0f, stepped (1, 12), [] (float v) { return juce::String (juce::roundToInt (v)) + " st"; });
-        legato   = addParameter ("legato", "Legato", 1.0f, stepped (0, 1), onOffText);
-        priority = addParameter ("priority", "Note Priority", 0.0f, stepped (0, 2), pick (priorityNames()));
-        character = addParameter ("character", "Character", 60.0f, { 0.0f, 100.0f }, percentText);
+        volume   = addParameter ("volume", "Volume", d.volume, { -60.0f, 6.0f }, dbText);
+        drive    = addParameter ("drive", "Drive", d.drive, { 0.0f, 100.0f }, percentText);
+        drift    = addParameter ("drift", "Drift", d.drift, { 0.0f, 100.0f }, percentText);
+        velocity = addParameter ("vel", "Velocity", d.velocity, { 0.0f, 100.0f }, percentText);
+        bendRange = addParameter ("bend", "Bend Range", d.bendRange, stepped (1, 12), [] (float v) { return juce::String (juce::roundToInt (v)) + " st"; });
+        legato   = addParameter ("legato", "Legato", d.legato, stepped (0, 1), onOffText);
+        priority = addParameter ("priority", "Note Priority", d.priority, stepped (0, 2), pick (priorityNames()));
+        character = addParameter ("character", "Character", d.character, { 0.0f, 100.0f }, percentText);
+
+        // Each parameter and the engine control it drives, by ID
+        for (auto& p : params)
+        {
+            auto* target = engine.params.find (p->getParameter().paramID.toRawUTF8());
+            jassert (target != nullptr);
+            if (target != nullptr)
+                links.push_back ({ p.get(), target });
+        }
     }
 
     juce::String getName() const override              { return "Elsewhere Mono"; }
@@ -184,72 +199,15 @@ public:
     bool noTail() override                              { return false; }
     double getTailLength() const override               { return 3.0; }
     int getNumOutputChannelsGivenInputs (int) override  { return 2; }
-    double getLatencySeconds() override                 { return oversampler != nullptr ? oversampler->getLatencyInSamples() / rate : 0.0; }
+    double getLatencySeconds() override                 { return engine.isPrepared() ? engine.latencySamples() / rate : 0.0; }
 
     int getModel() const    { return juce::jlimit (0, numModels - 1, juce::roundToInt (model.get())); }
 
     //==============================================================================
-    // Factory patches: bank A is Seventy, B is Acid, C is Sync Lead
-    struct Patch { int model; const char* name; std::vector<std::pair<const char*, float>> values; };
-
-    static const std::vector<Patch>& patches()
-    {
-        static const std::vector<Patch> all = {
-            { seventy, "Classic Bass",   { { "o1range", 2 }, { "o2range", 2 }, { "o3range", 1 }, { "o3wave", 3 }, { "m3", 4 }, { "m3on", 1 },
-                                           { "cutoff", 420 }, { "emph", 3 }, { "contour", 6 }, { "fd", 0.35f }, { "fs", 2 }, { "ad", 0.5f }, { "as", 8 } } },
-            { seventy, "Seventy Lead",   { { "glide", 0.08f }, { "o2freq", 0.12f }, { "o3range", 4 }, { "m3", 3 }, { "m3on", 1 },
-                                           { "cutoff", 1500 }, { "emph", 4 }, { "contour", 4 }, { "fd", 0.8f }, { "fs", 5 } } },
-            { seventy, "Brass Section",  { { "o2freq", 0.1f }, { "cutoff", 600 }, { "emph", 1.5f }, { "contour", 6.5f }, { "fa", 0.15f }, { "fd", 0.7f }, { "fs", 6 },
-                                           { "aa", 0.04f }, { "ad", 0.8f }, { "as", 9 } } },
-            { seventy, "Squelch",        { { "o1wave", 3 }, { "m2on", 0 }, { "cutoff", 260 }, { "emph", 8 }, { "contour", 8 }, { "fd", 0.22f }, { "fs", 0 },
-                                           { "drive", 55 }, { "glide", 0.05f } } },
-            { seventy, "Sub Drop",       { { "o1range", 1 }, { "o1wave", 0 }, { "o2range", 2 }, { "o2wave", 0 }, { "glide", 0.3f },
-                                           { "cutoff", 800 }, { "emph", 1 }, { "contour", 1 } } },
-            { seventy, "Pluck",          { { "o1range", 3 }, { "o2range", 4 }, { "o2freq", 7.0f }, { "m2", 4 }, { "cutoff", 250 }, { "contour", 9 }, { "fd", 0.15f }, { "fs", 0 },
-                                           { "ad", 0.35f }, { "as", 0 } } },
-            { seventy, "Wobble",         { { "o1range", 2 }, { "o2range", 2 }, { "o3range", 0 }, { "o3key", 0 }, { "o3wave", 0 }, { "o3freq", 2.0f },
-                                           { "modamt", 60 }, { "filtmod", 1 }, { "cutoff", 500 }, { "emph", 6 }, { "contour", 2 } } },
-            { seventy, "Vibrato Lead",   { { "o3range", 0 }, { "o3key", 0 }, { "o3wave", 0 }, { "o3freq", 3.0f }, { "modamt", 12 }, { "oscmod", 1 },
-                                           { "cutoff", 1800 }, { "emph", 3 }, { "glide", 0.06f } } },
-            { seventy, "Overdrive Bass", { { "o1range", 2 }, { "o2range", 2 }, { "m1", 10 }, { "m2", 10 }, { "fb", 6 }, { "fbon", 1 }, { "drive", 70 },
-                                           { "cutoff", 700 }, { "emph", 2 }, { "contour", 5 }, { "fd", 0.4f }, { "fs", 3 } } },
-            { seventy, "Soft Flute",     { { "o1range", 4 }, { "o1wave", 0 }, { "m2on", 0 }, { "noise", 1.5f }, { "noiseon", 1 }, { "noisecol", 1 },
-                                           { "cutoff", 2000 }, { "emph", 0 }, { "contour", 1 }, { "aa", 0.08f }, { "drive", 0 } } },
-            { seventy, "Siren",          { { "o3range", 0 }, { "o3key", 0 }, { "o3wave", 2 }, { "o3freq", -3.0f }, { "modamt", 80 }, { "oscmod", 1 },
-                                           { "cutoff", 3000 }, { "emph", 2 } } },
-            { seventy, "Fat Stack",      { { "o1range", 2 }, { "o2range", 2 }, { "o2freq", 0.1f }, { "o3range", 3 }, { "o3wave", 3 }, { "m1", 8 }, { "m2", 8 },
-                                           { "m3", 6 }, { "m3on", 1 }, { "cutoff", 700 }, { "emph", 2 }, { "contour", 6 }, { "fd", 0.5f }, { "fs", 4 },
-                                           { "character", 75 } } },
-            { seventy, "Funk Bass",      { { "o1range", 1 }, { "o2range", 2 }, { "o2freq", 0.06f }, { "cutoff", 350 }, { "emph", 4 }, { "contour", 7 },
-                                           { "fd", 0.18f }, { "fs", 1 }, { "ad", 0.3f }, { "as", 5 }, { "glide", 0.03f } } },
-            { seventy, "Prog Lead",      { { "o2freq", 0.15f }, { "o3range", 4 }, { "o3wave", 0 }, { "m1", 7 }, { "m2", 7 }, { "m3", 4 }, { "m3on", 1 },
-                                           { "glide", 0.1f }, { "cutoff", 2200 }, { "emph", 3 }, { "contour", 3 }, { "fd", 0.9f }, { "fs", 6 } } },
-            { seventy, "Hollow Square",  { { "o1wave", 5 }, { "o2wave", 3 }, { "o2freq", 0.05f }, { "cutoff", 1600 }, { "emph", 5 }, { "contour", 3 } } },
-            { seventy, "Mixer Overload", { { "o1range", 2 }, { "o2range", 2 }, { "o2freq", 0.12f }, { "o3range", 3 }, { "m1", 10 }, { "m2", 10 }, { "m3", 10 },
-                                           { "m3on", 1 }, { "drive", 60 }, { "character", 100 }, { "cutoff", 900 }, { "emph", 3 }, { "contour", 5 },
-                                           { "fd", 0.6f }, { "fs", 4 } } },
-            { seventy, "Noise Sweep",    { { "m1on", 0 }, { "m2on", 0 }, { "noise", 10 }, { "noiseon", 1 }, { "cutoff", 150 }, { "emph", 7 }, { "contour", 10 },
-                                           { "fa", 2.0f }, { "fd", 3.0f }, { "fs", 0 }, { "aa", 0.5f }, { "ad", 3.0f }, { "as", 0 } } },
-
-            { acid, "Acid Line",         { { "accutoff", 420 }, { "acres", 8 }, { "acenv", 6 }, { "acdecay", 0.45f }, { "acaccent", 7 }, { "drive", 20 } } },
-            { acid, "Square Squelch",    { { "acwave", 1 }, { "accutoff", 300 }, { "acres", 8.5f }, { "acenv", 7 }, { "acdecay", 0.3f }, { "acaccent", 8 } } },
-            { acid, "Deep Rubber",       { { "actune", -12 }, { "accutoff", 260 }, { "acres", 4 }, { "acenv", 3 }, { "acdecay", 0.9f }, { "acaccent", 4 } } },
-            { acid, "Screamer",          { { "accutoff", 700 }, { "acres", 9.3f }, { "acenv", 8 }, { "acdecay", 0.35f }, { "acaccent", 9 }, { "acdist", 75 } } },
-            { acid, "Liquid Slide",      { { "accutoff", 520 }, { "acres", 7 }, { "acenv", 5 }, { "acdecay", 0.6f }, { "acslide", 0.14f }, { "acaccent", 5 } } },
-            { acid, "Warehouse",         { { "acwave", 1 }, { "accutoff", 380 }, { "acres", 9 }, { "acenv", 6 }, { "acdecay", 0.25f }, { "acdist", 45 }, { "acaccent", 8 } } },
-
-            { syncLead, "Sync Lead",     {} },
-            { syncLead, "Sync Brass",    { { "sybpitch", 12 }, { "syenvb", 12 }, { "syfa", 0.08f }, { "syfd", 0.8f }, { "syfs", 5 }, { "sycutoff", 1200 },
-                                           { "syenv", 6 }, { "syaa", 0.03f } } },
-            { syncLead, "Tearing Sweep", { { "sybpitch", 3 }, { "syenvb", 36 }, { "syfd", 1.6f }, { "syfs", 0 }, { "sycutoff", 4000 }, { "syres", 3 },
-                                           { "drive", 40 } } },
-            { syncLead, "Hollow Sync",   { { "syawave", 1 }, { "sybwave", 1 }, { "sywidth", 20 }, { "sybpitch", 10 }, { "syenvb", 14 } } },
-            { syncLead, "Glide Sync",    { { "glide", 0.12f }, { "sybpitch", 14 }, { "syenvb", 20 }, { "sylfoamt", 20 }, { "sylfodest", 3 }, { "sylforate", 5.5f } } },
-            { syncLead, "PWM Lead",      { { "sysync", 0 }, { "syawave", 1 }, { "sybwave", 1 }, { "sybpitch", 0.08f }, { "syenvb", 0 }, { "sylfoamt", 55 },
-                                           { "sylfodest", 1 }, { "sylforate", 0.8f }, { "sycutoff", 1800 }, { "syenv", 3 } } },
-        };
-        return all;
-    }
+    // Factory patches (MonoEngine keeps them, so anything playing the engine has the same ones):
+    // bank A is Seventy, B is Acid, C is Sync Lead
+    using Patch = MonoEngine::Patch;
+    static const std::vector<Patch>& patches()          { return MonoEngine::patches(); }
 
     /** Global patch indices for a model, in order. */
     static std::vector<int> patchesFor (int m)
@@ -273,25 +231,20 @@ public:
         return juce::String::charToString ((juce::juce_wchar) ('A' + p.model)) + juce::String (n).paddedLeft ('0', 3) + " " + p.name;
     }
 
-    float patchValue (const Patch& patch, te::AutomatableParameter& ap) const
+    float patchValue (int index, te::AutomatableParameter& ap) const
     {
-        if (ap.paramID == "model")
-            return (float) patch.model;
-        for (auto& [id, value] : patch.values)
-            if (ap.paramID == id)
-                return value;
-        return ap.getDefaultValue().value_or (ap.getCurrentBaseValue());
+        return MonoEngine::patchValue (index, ap.paramID.toRawUTF8());
     }
 
-    /** Sets every parameter to the patch's value (or its default), as one undoable step. */
-    void loadPatch (int index)
+    /** Sets every parameter to the patch's value (or its default): as its own undo step, or as part of the one in progress. */
+    void loadPatch (int index, bool ownUndoStep = true)
     {
         index = juce::jlimit (0, (int) patches().size() - 1, index);
-        const auto& patch = patches()[(size_t) index];
 
-        edit.getUndoManager().beginNewTransaction ("Load Mono patch");
+        if (ownUndoStep)
+            edit.getUndoManager().beginNewTransaction ("Load Mono patch");
         for (auto& p : params)
-            p->getParameter().setParameter (patchValue (patch, p->getParameter()), juce::sendNotification);
+            p->getParameter().setParameter (patchValue (index, p->getParameter()), juce::sendNotification);
 
         state.setProperty ("patch", index, &edit.getUndoManager());
     }
@@ -305,11 +258,10 @@ public:
         if (index < 0 || index >= (int) patches().size())
             return true;
 
-        const auto& patch = patches()[(size_t) index];
         for (auto& p : params)
         {
             auto& ap = p->getParameter();
-            const float v = patchValue (patch, ap);
+            const float v = patchValue (index, ap);
             if (std::abs (ap.getCurrentBaseValue() - v) > 1.0e-3f * juce::jmax (1.0f, std::abs (v)))
                 return true;
         }
@@ -322,22 +274,13 @@ public:
         // (The engine can do this while audio is still running through the device)
         const juce::SpinLock::ScopedLockType dspGuard (dspLock);
         rate = info.sampleRate;
-        osRate = (float) (rate * 4.0);
-        oversampler = std::make_unique<juce::dsp::Oversampling<float>> (1, 2, juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR, true, false);
-        outDc.set (6.0f, (float) rate);
-        oversampler->initProcessing ((size_t) maxChunk);
-        work.setSize (1, maxChunk);
-        work.clear();
-        resetVoice();
+        engine.prepare (rate, info.blockSizeSamples);
+        right.assign ((size_t) juce::jmax (info.blockSizeSamples, 512) * 2, 0.0f);
     }
 
-    void deinitialise() override    { const juce::SpinLock::ScopedLockType dspGuard (dspLock); oversampler.reset(); }
+    void deinitialise() override {}
 
-    void midiPanic() override
-    {
-        stack.clear(); sustained.clear();
-        ampEnv.gate (false); filterEnv.gate (false);
-    }
+    void midiPanic() override       { engine.allNotesOff(); }
 
     void applyToBuffer (const te::PluginRenderContext& fc) override
     {
@@ -346,12 +289,13 @@ public:
         if (! dspGuard.isLocked())
             return;     // being set up again for a new rate or buffer size
 
-        if (fc.destBuffer == nullptr || oversampler == nullptr)
+        if (fc.destBuffer == nullptr || ! engine.isPrepared())
             return;
 
         juce::ScopedNoDenormals noDenormals;
         auto& buf = *fc.destBuffer;
         buf.clear (fc.bufferStartSample, fc.bufferNumSamples);
+        updateEngine();
 
         int done = 0;
         if (fc.bufferForMidiMessages != nullptr)
@@ -371,9 +315,12 @@ public:
             render (buf, fc.bufferStartSample + done, fc.bufferNumSamples - done);
     }
 
+    /** The sound itself. */
+    MonoEngine engine;
+
     // For the display
-    SynthCore::ScopeBuffer scope;
-    float getSamplesPerCycle() const    { return samplesPerCycle.load(); }
+    SynthCore::ScopeBuffer& scope = engine.scope;
+    float getSamplesPerCycle() const    { return engine.samplesPerCycle.load(); }
 
     struct OscParams { Param range, wave, freq; };
     std::array<OscParams, 3> oscs;
@@ -390,391 +337,44 @@ public:
     Param volume, drive, drift, velocity, bendRange, legato, priority, character;
 
 private:
-    std::array<float, 512> warmed {};
-    static constexpr int maxChunk = 256;
-
     double rate = 44100.0;
-    float osRate = 88200.0f;
-    std::unique_ptr<juce::dsp::Oversampling<float>> oversampler;
-    juce::AudioBuffer<float> work;
+    std::vector<float> right;       // for a mono buffer
+    std::vector<std::pair<te::ParameterWithStateValue*, float*>> links;
 
-    // The voice
-    std::array<SynthCore::Oscillator, 3> osc;
-    std::array<SynthCore::Drift, 3> drifts { SynthCore::Drift (11), SynthCore::Drift (23), SynthCore::Drift (37) };
-    SynthCore::Ladder ladder;
-    SynthCore::MoogLadder moog;
-    std::array<SynthCore::DcBlock, 3> oscAc;
-    SynthCore::DcBlock outDc;
-    std::array<float, 3> jitter {};
-    juce::Random jitterRng { 4711 };
-    SynthCore::AnalogEnvelope ampEnv, filterEnv;
-    SynthCore::Noise noiseGen;
-    SynthCore::NoteStack stack;
-    std::vector<int> sustained;
-    float pitch = 60.0f, targetPitch = 60.0f, noteVelocity = 1.0f, lastOsc3 = 0.0f, lastOut = 0.0f;
-    float lfoPhase = 0.0f, accentCharge = 0.0f;
-    bool pedal = false, accented = false, sliding = false;
-    float bend = 0.0f, modWheel = 0.0f;
-    int controlCounter = 0;
-    std::atomic<float> samplesPerCycle { 200.0f };
-
-    void resetVoice()
+    /** The parameters as they are now (automation included) into the engine. */
+    void updateEngine()
     {
-        for (auto& o : osc) o.reset();
-        ladder.reset();
-        moog.reset();
-        for (auto& a : oscAc) a.reset();
-        outDc.reset();
-        jitter.fill (0.0f);
-        ampEnv.reset(); filterEnv.reset();
-        stack.clear(); sustained.clear();
-        pedal = accented = sliding = false;
-        bend = modWheel = lastOsc3 = lastOut = lfoPhase = accentCharge = 0.0f;
+        for (auto& [p, target] : links)
+            *target = p->getCurrentValue();
     }
 
     void handleMidi (const juce::MidiMessage& m)
     {
-        if (m.isNoteOn())                       noteOn (m.getNoteNumber(), m.getFloatVelocity());
-        else if (m.isNoteOff())                 noteOff (m.getNoteNumber());
-        else if (m.isPitchWheel())              bend = (float) (m.getPitchWheelValue() - 8192) / 8192.0f;
-        else if (m.isControllerOfType (1))      modWheel = (float) m.getControllerValue() / 127.0f;
-        else if (m.isSustainPedalOn())          pedal = true;
-        else if (m.isSustainPedalOff())
-        {
-            pedal = false;
-            for (auto n : sustained) noteOff (n);
-            sustained.clear();
-        }
+        if (m.isNoteOn())                       engine.noteOn (m.getNoteNumber(), m.getFloatVelocity());
+        else if (m.isNoteOff())                 engine.noteOff (m.getNoteNumber());
+        else if (m.isPitchWheel())              engine.setPitchBend ((float) (m.getPitchWheelValue() - 8192) / 8192.0f);
+        else if (m.isControllerOfType (1))      engine.setModWheel ((float) m.getControllerValue() / 127.0f);
+        else if (m.isSustainPedalOn())          engine.setSustainPedal (true);
+        else if (m.isSustainPedalOff())         engine.setSustainPedal (false);
         else if (m.isAllNotesOff() || m.isAllSoundOff())
             midiPanic();
     }
 
-    SynthCore::NoteStack::Priority notePriority() const
-    {
-        return (SynthCore::NoteStack::Priority) juce::jlimit (0, 2, juce::roundToInt (priority.get()));
-    }
-
-    void noteOn (int note, float vel)
-    {
-        const bool wasEmpty = stack.empty();
-        stack.press (note);
-        sustained.erase (std::remove (sustained.begin(), sustained.end(), note), sustained.end());
-        targetPitch = (float) stack.current (notePriority());
-
-        // Acid: overlapping notes slide and don't retrigger; others always retrigger
-        const bool isAcid = getModel() == acid;
-        sliding = isAcid && ! wasEmpty;
-        const bool retrigger = isAcid ? wasEmpty : (wasEmpty || legato.get() < 0.5f);
-
-        if (retrigger)
-        {
-            noteVelocity = vel;
-            accented = vel >= 100.0f / 127.0f;
-            ampEnv.gate (true);
-            filterEnv.gate (true);
-        }
-
-        const bool instant = isAcid ? ! sliding : glide.get() <= 0.0f;
-        if (instant)
-            pitch = targetPitch;
-    }
-
-    void noteOff (int note)
-    {
-        if (pedal) { sustained.push_back (note); return; }
-
-        stack.release (note);
-        if (stack.empty())
-        {
-            ampEnv.gate (false);
-            filterEnv.gate (false);
-            return;
-        }
-
-        // Back to the note still held (like a monosynth keyboard)
-        targetPitch = (float) stack.current (notePriority());
-        const bool isAcid = getModel() == acid;
-        if (isAcid) sliding = true;
-        else if (glide.get() <= 0.0f) pitch = targetPitch;
-        if (! isAcid && legato.get() < 0.5f) { ampEnv.gate (true); filterEnv.gate (true); }
-    }
-
-    static float rangeOctaves (float r)
-    {
-        static constexpr float oct[] = { -6.0f, -2.0f, -1.0f, 0.0f, 1.0f, 2.0f };
-        return oct[juce::jlimit (0, 5, juce::roundToInt (r))];
-    }
-
-    static float level (float tenths)       { auto x = juce::jlimit (0.0f, 1.0f, tenths / 10.0f); return x * x * 0.6f + x * 0.4f; }
-    static float mtof (float note)          { return 440.0f * std::pow (2.0f, (note - 69.0f) / 12.0f); }
-
     void render (juce::AudioBuffer<float>& buf, int start, int num)
     {
-        while (num > 0)
+        auto* L = buf.getWritePointer (0, start);
+
+        if (buf.getNumChannels() > 1)
+            return engine.render (L, buf.getWritePointer (1, start), num);
+
+        // A mono buffer: the right side goes nowhere
+        for (int done = 0; done < num; )
         {
-            const int n = juce::jmin (num, maxChunk);
-            renderChunk (buf, start, n);
-            start += n;
-            num -= n;
+            const int n = juce::jmin ((int) right.size(), num - done);
+            std::fill (right.begin(), right.begin() + n, 0.0f);
+            engine.render (L + done, right.data(), n);
+            done += n;
         }
-    }
-
-    /** Settings shared by all models, read once per chunk. */
-    struct Common
-    {
-        float sr, bendSemis, driftSemis, velAmt, velGain, outGain, glideCoeff, inputGain;
-    };
-
-    void renderChunk (juce::AudioBuffer<float>& buf, int start, int n)
-    {
-        Common c;
-        c.sr = osRate;
-        c.bendSemis = bend * bendRange.get();
-        c.driftSemis = drift.get() / 100.0f * 0.12f;
-        c.velAmt = velocity.get() / 100.0f;
-        c.velGain = 1.0f - c.velAmt * (1.0f - noteVelocity);
-        c.outGain = juce::Decibels::decibelsToGain (volume.get(), -60.0f);
-        c.glideCoeff = glide.get() <= 0.0f ? 1.0f : 1.0f - std::exp (-1.0f / (glide.get() * 0.35f * c.sr));
-        c.inputGain = 0.55f * (1.0f + drive.get() / 100.0f * 2.5f);
-
-        // Render at twice the rate into the oversampler's block, then bring it back down
-        auto inBlock = juce::dsp::AudioBlock<float> (work).getSubBlock (0, (size_t) n);
-        auto up = oversampler->processSamplesUp (inBlock);
-        float* os = up.getChannelPointer (0);
-        const int osN = (int) up.getNumSamples();
-
-        float cyclePitch = pitch;
-        switch (getModel())
-        {
-            case acid:      cyclePitch = renderAcid (os, osN, c); break;
-            case syncLead:  cyclePitch = renderSync (os, osN, c); break;
-            default:        cyclePitch = renderSeventy (os, osN, c); break;
-        }
-
-        auto outBlock = juce::dsp::AudioBlock<float> (work).getSubBlock (0, (size_t) n);
-        oversampler->processSamplesDown (outBlock);
-
-        const float* mono = work.getReadPointer (0);
-
-        // The output stage: a touch of even-harmonic warmth (asymmetric), then a soft ceiling
-        const float warmth = character.get() / 100.0f * 0.14f;
-        for (int i = 0; i < n; ++i)
-        {
-            const float x = mono[i] * c.outGain;
-            warmed[(size_t) i] = std::tanh (outDc.process (x + warmth * x * x) * 1.4f) / 1.4f;
-        }
-
-        for (int ch = 0; ch < buf.getNumChannels(); ++ch)
-        {
-            float* dst = buf.getWritePointer (ch, start);
-            for (int i = 0; i < n; ++i)
-                dst[i] = warmed[(size_t) i];
-        }
-
-        for (int i = 0; i < n; ++i)
-            scope.push (mono[i]);
-
-        work.clear();
-        samplesPerCycle = (float) rate / juce::jmax (1.0f, mtof (cyclePitch));
-    }
-
-    //==============================================================================
-    float renderSeventy (float* os, int osN, const Common& c)
-    {
-        const float sr = c.sr;
-        std::array<SynthCore::Wave, 3> wave;
-        std::array<float, 3> octs, gains;
-        for (int i = 0; i < 3; ++i)
-        {
-            wave[(size_t) i] = wavesFor (i)[(size_t) juce::jlimit (0, 5, juce::roundToInt (oscs[(size_t) i].wave.get()))];
-            octs[(size_t) i] = rangeOctaves (oscs[(size_t) i].range.get()) * 12.0f + (i > 0 ? oscs[(size_t) i].freq.get() : 0.0f);
-            gains[(size_t) i] = mixOn[(size_t) i].get() > 0.5f ? level (mix[(size_t) i].get()) : 0.0f;
-        }
-
-        const float fbGain = feedbackOn.get() > 0.5f ? level (feedback.get()) * 1.6f : 0.0f;
-        const float noiseGain = noiseOn.get() > 0.5f ? level (noise.get()) * 0.8f : 0.0f;
-        const bool pink = noiseColour.get() > 0.5f;
-        const bool osc3Keyed = osc3Key.get() > 0.5f;
-        const float tuneSemis = tune.get() / 100.0f;
-        const float modDepth = juce::jlimit (0.0f, 1.0f, modAmount.get() / 100.0f + modWheel);
-        const float noiseMix = modMix.get() / 100.0f;
-        const bool toPitch = oscMod.get() > 0.5f, toFilter = filterMod.get() > 0.5f;
-        const float baseCutoff = cutoff.get();
-        const float res = std::pow (emphasis.get() / 10.0f, 1.3f);
-        const float contourOct = contour.get() / 10.0f * 5.5f;
-        static constexpr float keyAmounts[] = { 0.0f, 1.0f / 3.0f, 2.0f / 3.0f, 1.0f };
-        const float keyAmount = keyAmounts[juce::jlimit (0, 3, juce::roundToInt (keyTrack.get()))];
-        const float velFilterOct = c.velAmt * noteVelocity * 1.5f;
-        const float fa = fAttack.get(), fd = fDecay.get(), fs = fSustain.get() / 10.0f;
-        const float aa = aAttack.get(), ad = aDecay.get(), as = aSustain.get() / 10.0f;
-        const bool longRelease = release.get() > 0.5f;
-
-        // Character: curved ramps, square droop, pitch jitter, a mixer that overloads into the filter
-        const float ch = character.get() / 100.0f;
-        const float curve = 0.08f * ch;
-        for (auto& a : oscAc) a.set (2.0f + 9.0f * ch, sr);
-        const float jitterAmt = 0.006f * ch;                 // semitones of cycle-to-cycle wander
-        const float mixK = 0.45f + 0.65f * ch, mixBias = 0.18f * ch;
-        const float mixNorm = 1.0f / (mixK * (1.0f - std::tanh (mixBias) * std::tanh (mixBias)));
-        const float mixBiasOut = std::tanh (mixBias);
-        std::array<bool, 3> ramp;
-        for (int k = 0; k < 3; ++k)
-            ramp[(size_t) k] = wave[(size_t) k] == SynthCore::Wave::saw || wave[(size_t) k] == SynthCore::Wave::reverseSaw || wave[(size_t) k] == SynthCore::Wave::shark;
-
-        for (int i = 0; i < osN; ++i)
-        {
-            pitch += (targetPitch - pitch) * c.glideCoeff;
-            for (auto& j : jitter)
-                j += ((jitterRng.nextFloat() * 2.0f - 1.0f) * jitterAmt - j) * 0.002f;
-
-            const float envF = filterEnv.process (fa, fd, fs, longRelease ? fd : 0.01f, sr);
-            const float envA = ampEnv.process (aa, ad, as, longRelease ? ad : 0.01f, sr);
-
-            const float noiseSample = pink ? noiseGen.pink() : noiseGen.white();
-            const float modSource = lastOsc3 * (1.0f - noiseMix) + noiseSample * noiseMix;
-            const float modPitch = toPitch ? modSource * modDepth * 12.0f : 0.0f;
-            const float modFilter = toFilter ? modSource * modDepth * 4.0f : 0.0f;
-
-            const float base = pitch + tuneSemis + c.bendSemis;
-            const float f1 = mtof (base + octs[0] + drifts[0].process (c.driftSemis, sr) + modPitch + jitter[0]);
-            const float f2 = mtof (base + octs[1] + drifts[1].process (c.driftSemis, sr) + modPitch + jitter[1]);
-            const float f3 = osc3Keyed ? mtof (base + octs[2] + drifts[2].process (c.driftSemis, sr) + jitter[2]) : mtof (60.0f + octs[2]);
-
-            std::array<float, 3> o { osc[0].process (wave[0], f1 / sr), osc[1].process (wave[1], f2 / sr), osc[2].process (wave[2], f3 / sr) };
-            for (size_t k = 0; k < 3; ++k)
-            {
-                // A ramp charging a capacitor isn't quite straight; the output is AC coupled
-                if (ramp[k]) o[k] -= curve * (o[k] * o[k] - 0.3333f);
-                o[k] = oscAc[k].process (o[k]);
-            }
-            lastOsc3 = o[2];
-
-            const float sum = o[0] * gains[0] + o[1] * gains[1] + o[2] * gains[2] + noiseSample * noiseGain + lastOut * fbGain;
-            // The mixer: clean at moderate levels, rounding off and thickening when pushed
-            const float mixed = (std::tanh (mixK * sum + mixBias) - mixBiasOut) * mixNorm;
-
-            if ((controlCounter++ & 7) == 0)
-            {
-                const float keyOct = (pitch - 60.0f) / 12.0f * keyAmount;
-                moog.set (baseCutoff * std::pow (2.0f, contourOct * envF + keyOct + modFilter + velFilterOct), res, sr);
-            }
-
-            const float out = moog.process (mixed * c.inputGain) * envA * c.velGain;
-            lastOut = out;
-            os[i] = out;
-        }
-
-        return pitch + tuneSemis + octs[0];
-    }
-
-    //==============================================================================
-    float renderAcid (float* os, int osN, const Common& c)
-    {
-        const float sr = c.sr;
-        const auto wave = acWave.get() > 0.5f ? SynthCore::Wave::square : SynthCore::Wave::saw;
-        const float tuneSemis = acTune.get();
-        const float baseCutoff = acCutoff.get();
-        const float res = std::pow (acRes.get() / 10.0f, 1.2f) * 0.97f;
-        const float accentAmt = acAccent.get() / 10.0f;
-        const bool acc = accented && accentAmt > 0.0f;
-        const float envOct = acEnvMod.get() / 10.0f * 4.5f * (acc ? 1.0f + accentAmt * 0.6f : 1.0f);
-        const float decay = acc ? 0.2f : acDecay.get();     // accented notes use a short decay, as on the original
-        const float slideCoeff = sliding ? 1.0f - std::exp (-1.0f / (acSlide.get() * 0.35f * sr)) : 1.0f;
-        const float accentGain = acc ? 1.0f + accentAmt * 0.7f : 1.0f;
-        const float distGain = 1.0f + acDist.get() / 100.0f * 12.0f;
-        const float chargeCoeff = 1.0f - std::exp (-1.0f / (0.18f * sr));
-        ladder.poles = 3;
-
-        for (int i = 0; i < osN; ++i)
-        {
-            pitch += (targetPitch - pitch) * slideCoeff;
-
-            // Decay-only filter envelope; the amp holds while the key is down, then lets go quickly
-            const float envF = filterEnv.process (0.001f, decay, 0.0f, decay, sr);
-            const float envA = ampEnv.process (0.002f, 6.0f, 0.0f, 0.012f, sr);
-
-            // Accent "wow": accents charge a capacitor that adds to the cutoff, so runs of
-            // accents climb higher and higher
-            accentCharge += ((acc ? envF : 0.0f) - accentCharge) * chargeCoeff;
-
-            const float f = mtof (pitch + tuneSemis + c.bendSemis + drifts[0].process (c.driftSemis * 0.5f, sr));
-            const float o = osc[0].process (wave, f / sr);
-
-            if ((controlCounter++ & 7) == 0)
-                ladder.set (baseCutoff * std::pow (2.0f, envOct * envF + accentCharge * accentAmt * 2.5f), res, sr);
-
-            float out = ladder.process (o * c.inputGain) * envA * accentGain * c.velGain;
-            if (distGain > 1.01f)
-                out = std::tanh (out * distGain) / std::sqrt (distGain);
-            os[i] = out;
-        }
-
-        return pitch + tuneSemis;
-    }
-
-    //==============================================================================
-    float renderSync (float* os, int osN, const Common& c)
-    {
-        const float sr = c.sr;
-        const bool pulseA = syAWave.get() > 0.5f;
-        const int waveB = juce::roundToInt (syBWave.get());
-        const float width = syWidth.get() / 100.0f;
-        const float bPitch = syBPitch.get(), envToB = syEnvToB.get();
-        const bool hardSync = sySync.get() > 0.5f;
-        const float gainA = level (syMixA.get()), gainB = level (syMixB.get()), gainN = level (syNoise.get()) * 0.8f;
-        const float baseCutoff = syCutoff.get();
-        const float res = std::pow (syRes.get() / 10.0f, 1.3f);
-        const float envOct = syEnvAmt.get() / 10.0f * 5.5f;
-        static constexpr float keyAmounts[] = { 0.0f, 1.0f / 3.0f, 2.0f / 3.0f, 1.0f };
-        const float keyAmount = keyAmounts[juce::jlimit (0, 3, juce::roundToInt (syKey.get()))];
-        const float fa = syFA.get(), fd = syFD.get(), fs = syFS.get() / 10.0f, fr = syFR.get();
-        const float aa = syAA.get(), ad = syAD.get(), as = syAS.get() / 10.0f, ar = syAR.get();
-        const float lfoInc = syLfoRate.get() / sr;
-        const float lfoAmt = juce::jlimit (0.0f, 1.0f, syLfoAmt.get() / 100.0f + modWheel);
-        const int lfoDest = juce::roundToInt (syLfoDest.get());
-        const float velFilterOct = c.velAmt * noteVelocity * 1.5f;
-        ladder.poles = 4;
-
-        for (int i = 0; i < osN; ++i)
-        {
-            pitch += (targetPitch - pitch) * c.glideCoeff;
-
-            const float envF = filterEnv.process (fa, fd, fs, fr, sr);
-            const float envA = ampEnv.process (aa, ad, as, ar, sr);
-
-            lfoPhase += lfoInc;
-            if (lfoPhase >= 1.0f) lfoPhase -= 1.0f;
-            const float lfo = std::sin (lfoPhase * SynthCore::twoPi) * lfoAmt;
-
-            const float base = pitch + c.bendSemis + (lfoDest == 3 ? lfo * 0.6f : 0.0f);
-            const float fA = mtof (base + drifts[0].process (c.driftSemis, sr));
-            const float fB = mtof (base + bPitch + envToB * envF + (lfoDest == 0 ? lfo * 12.0f : 0.0f) + drifts[1].process (c.driftSemis, sr));
-            const float w = juce::jlimit (0.05f, 0.95f, width + (lfoDest == 1 ? lfo * 0.42f : 0.0f));
-
-            const float dtA = fA / sr, dtB = fB / sr;
-            const float a = pulseA ? osc[0].pulse (w, dtA) : osc[0].process (SynthCore::Wave::saw, dtA);
-
-            // Hard sync: when A starts a new cycle, B starts again too (at the matching
-            // fraction of a sample, which keeps the reset clean)
-            if (hardSync && osc[0].wrapped (dtA))
-                osc[1].phase = osc[0].phase * dtB / juce::jmax (1.0e-7f, dtA);
-
-            const float b = waveB == 1 ? osc[1].pulse (w, dtB)
-                          : osc[1].process (waveB == 2 ? SynthCore::Wave::triangle : SynthCore::Wave::saw, dtB);
-
-            const float noiseSample = gainN > 0.0f ? noiseGen.white() : 0.0f;
-            const float mixed = a * gainA + b * gainB + noiseSample * gainN;
-
-            if ((controlCounter++ & 7) == 0)
-            {
-                const float keyOct = (pitch - 60.0f) / 12.0f * keyAmount;
-                ladder.set (baseCutoff * std::pow (2.0f, envOct * envF + keyOct + (lfoDest == 2 ? lfo * 3.0f : 0.0f) + velFilterOct), res, sr);
-            }
-
-            os[i] = ladder.process (mixed * c.inputGain) * envA * c.velGain;
-        }
-
-        return pitch;
     }
 };
 

@@ -6,6 +6,8 @@
 #include "devices/DeviceBase.h"
 #include "SomewhereBeat.h"
 #include "devices/HazeDevice.h"
+#include "devices/MonoDevice.h"
+#include "devices/PolyDevice.h"
 
 namespace elsewhere::ProjectAudioTests
 {
@@ -490,6 +492,32 @@ int run (te::Engine& engine, const juce::File& outDir)
                 }
                 log.check (r.keysBySound.size() == 2 && haze != nullptr && haze->getPatchIndex() == 1 && piano != nullptr && r.keysPlay
                            && r.stems.getLast()->isMuted (false), "Haze next to a sampled sound: a Haze track and a Sampler track, the stem muted");
+            }
+
+            // keysSynths: two synths at once, one with a control moved on the phone
+            auto two = sender.getChildFile ("Beats/2026-11-27 09.20.00 Beat P5 90bpm");
+            writeSine (two.getChildFile ("17 Keys Poly.wav"));
+            writeMidi (two.getChildFile ("Keys.mid"), 1, { { 60, 80 }, { 48, 80 } });
+            writeMidi (two.getChildFile ("Keys 18.mid"), 1, { { 60, 80 } });
+            writeMidi (two.getChildFile ("Keys 20.mid"), 1, { { 48, 80 } });
+            two.getChildFile (SomewhereBeat::infoFileName)
+               .replaceWithText (R"j({"app":"Somewhere","format":1,"bpm":90,"swing":0,"patterns":[1],"steps":16,"sender":"Nick (a1b2)",
+                                     "keysPad":18,"keysPads":[18,20],"keysSynth":{"pad":18,"synth":"Poly","patch":3},
+                                     "keysSynths":[{"pad":18,"synth":"Poly","patch":3,"params":{"volume":-12.5}},{"pad":20,"synth":"Mono","patch":2}],"sounds":[]})j");
+            {
+                auto [p, r] = importBeat (two, "Poly And Mono");
+                PolyDevice* poly = nullptr;
+                MonoDevice* mono = nullptr;
+                for (auto* t : r.keysBySound)
+                {
+                    if (auto* d = t->pluginList.findFirstPluginOfType<PolyDevice>()) poly = d;
+                    if (auto* d = t->pluginList.findFirstPluginOfType<MonoDevice>()) mono = d;
+                }
+                auto vol = poly != nullptr ? poly->getAutomatableParameterByID ("volume") : nullptr;
+                log.check (r.keysBySound.size() == 2 && poly != nullptr && mono != nullptr && vol != nullptr
+                           && juce::approximatelyEqual (vol->getCurrentValue(), -12.5f) && mono->getPatchIndex() == 2 && r.keysPlay
+                           && r.stems.getLast()->isMuted (false),
+                           "keysSynths: a Poly track with the phone's volume and a Mono track on its patch, the stem muted");
             }
         }
 

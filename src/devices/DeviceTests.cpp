@@ -1316,6 +1316,159 @@ int run (te::Engine& engine, const juce::File& outDir)
     }
 
     //==============================================================================
+    r.log << "Mono engine\n";
+    {
+        // The device is MonoEngine: the same notes through the engine on its own come out the
+        // same, sample for sample, for each model (glide or slide, bend and mod wheel included)
+        auto& md = make<MonoDevice> (*edit, MonoDevice::xmlTypeName);
+        auto on  = [] (int note, int vel = 100) { return juce::MidiMessage::noteOn (1, note, (juce::uint8) vel); };
+        auto off = [] (int note) { return juce::MidiMessage::noteOff (1, note); };
+        auto reset = [&] { md.initialise ({ te::TimePosition(), sr, block }); };
+        const int s1 = (int) sr;
+
+        auto renderEngine = [&] (MonoEngine& e, const std::vector<std::pair<int, juce::MidiMessage>>& midi, int numSamples)
+        {
+            juce::AudioBuffer<float> out (2, numSamples);
+            out.clear();
+            auto* L = out.getWritePointer (0);
+            auto* R = out.getWritePointer (1);
+
+            // In the same pieces the device renders in: blocks, split at each message
+            for (int start = 0; start < numSamples; start += block)
+            {
+                const int n = juce::jmin (block, numSamples - start);
+                int done = 0;
+                for (auto& [pos, m] : midi)
+                {
+                    if (pos < start || pos >= start + n) continue;
+                    if (pos - start > done) { e.render (L + start + done, R + start + done, pos - start - done); done = pos - start; }
+                    if (m.isNoteOn()) e.noteOn (m.getNoteNumber(), m.getFloatVelocity());
+                    else if (m.isNoteOff()) e.noteOff (m.getNoteNumber());
+                    else if (m.isController()) e.setModWheel ((float) m.getControllerValue() / 127.0f);
+                    else if (m.isPitchWheel()) e.setPitchBend ((float) (m.getPitchWheelValue() - 8192) / 8192.0f);
+                }
+                if (done < n) e.render (L + start + done, R + start + done, n - done);
+            }
+            return out;
+        };
+
+        for (int m = 0; m < MonoDevice::numModels; ++m)
+        {
+            const int patch = MonoDevice::patchesFor (m)[1];
+            md.loadPatch (patch);
+            if (m != MonoDevice::acid) setParam (md.glide, 0.12f);
+            reset();
+            std::vector<std::pair<int, juce::MidiMessage>> midi = {
+                { 0, on (45) }, { 9000, on (52, 120) }, { 9500, off (45) },                 // legato: glide or slide
+                { s1 / 2, juce::MidiMessage::controllerEvent (1, 1, 80) }, { s1 / 2 + 300, juce::MidiMessage::pitchWheel (1, 12000) },
+                { s1, off (52) }, { s1 + 7000, on (57, 60) }, { s1 + 7000 + s1 / 3, off (57) },
+                { s1 + 7000 + s1 / 3 + 100, juce::MidiMessage::pitchWheel (1, 8192) }, { s1 + 7000 + s1 / 3 + 100, juce::MidiMessage::controllerEvent (1, 1, 0) } };
+            juce::AudioBuffer<float> viaDevice (2, (int) (sr * 2.2));
+            viaDevice.clear();
+            process (md, viaDevice, midi);
+
+            MonoEngine e;
+            e.setPatch (patch);
+            if (m != MonoDevice::acid) e.params.glide = 0.12f;
+            e.prepare (sr, block);
+            auto viaEngine = renderEngine (e, midi, viaDevice.getNumSamples());
+
+            float worst = 0.0f;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < viaDevice.getNumSamples(); ++i)
+                    worst = juce::jmax (worst, std::abs (viaDevice.getSample (ch, i) - viaEngine.getSample (ch, i)));
+            check (r, worst == 0.0f && viaDevice.getMagnitude (0, viaDevice.getNumSamples()) > 0.05f,
+                   juce::String (MonoEngine::modelName (m)) + ": the device plays MonoEngine, the engine on its own renders the same, sample for sample (worst "
+                       + juce::String (worst) + ")");
+        }
+        setParam (md.glide, 0.0f);
+
+        // prepare() starts it afresh
+        {
+            MonoEngine again;
+            again.setPatch (MonoDevice::patchesFor (MonoDevice::seventy)[0]);
+            again.prepare (sr);
+            juce::AudioBuffer<float> b1 (2, s1), b2 (2, s1);
+            b1.clear(); b2.clear();
+            again.noteOn (48, 0.8f); again.render (b1.getWritePointer (0), b1.getWritePointer (1), s1);
+            again.prepare (sr);
+            again.noteOn (48, 0.8f); again.render (b2.getWritePointer (0), b2.getWritePointer (1), s1);
+            bool same = true;
+            for (int i = 0; i < s1; ++i) same = same && b1.getSample (0, i) == b2.getSample (0, i);
+            check (r, same && b1.getMagnitude (0, s1) > 0.05f, "MonoEngine: prepare() starts it afresh, the same notes render the same audio every time");
+        }
+
+        bool samePatches = MonoEngine::patchCount() == (int) MonoDevice::patches().size() && MonoEngine::patchCount() == 29;
+        for (int i = 0; i < MonoEngine::patchCount(); ++i)
+            samePatches = samePatches && MonoEngine::patchModel (i) == MonoDevice::patches()[(size_t) i].model
+                          && juce::String (MonoEngine::patchName (i)) == MonoDevice::patches()[(size_t) i].name;
+        check (r, samePatches && juce::String (MonoEngine::patchName (17)) == "Acid Line", "MonoEngine has the device's patches");
+
+        // A control written straight into params between renders is heard in the next render
+        {
+            auto run = [&] (bool change)
+            {
+                MonoEngine e;
+                e.setPatch (0);
+                e.prepare (sr);
+                juce::AudioBuffer<float> b (2, s1);
+                b.clear();
+                e.noteOn (45, 0.8f);
+                e.render (b.getWritePointer (0), b.getWritePointer (1), s1 / 2);
+                if (change) { *e.params.find ("cutoff") = 3000.0f; *e.params.find ("emph") = 7.0f; }
+                e.render (b.getWritePointer (0, s1 / 2), b.getWritePointer (1, s1 / 2), s1 / 2);
+                return b;
+            };
+            auto a = run (false), b = run (true);
+            bool beforeSame = true;
+            float after = 0.0f;
+            for (int i = 0; i < s1 / 2; ++i) beforeSame = beforeSame && a.getSample (0, i) == b.getSample (0, i);
+            for (int i = s1 / 2; i < s1 / 2 + 2048; ++i) after = juce::jmax (after, std::abs (a.getSample (0, i) - b.getSample (0, i)));
+            check (r, beforeSame && after > 0.01f, "MonoEngine: changing params between renders changes the next render (difference " + juce::String (after, 3) + ")");
+        }
+
+        // The controls: every one resolves, they cover every parameter, and match the device's ranges
+        {
+            MonoEngine::Params p;
+            const MonoEngine::Params defaults;
+            juce::String bad;
+            std::set<juce::String> ids;
+            for (auto& c : MonoEngine::controls())
+            {
+                ids.insert (c.id);
+                auto* v = p.find (c.id);
+                auto ap = md.getAutomatableParameterByID (c.id);
+                if (v == nullptr || ap == nullptr) { bad << c.id << " (missing) "; continue; }
+                const auto range = ap->getValueRange();
+                if (std::abs (range.getStart() - c.min) > 1.0e-4f || std::abs (range.getEnd() - c.max) > 1.0e-4f
+                     || std::abs (*v - c.defaultValue) > 1.0e-6f || std::abs (ap->getDefaultValue().value_or (-999.0f) - c.defaultValue) > 1.0e-6f
+                     || (! c.choices.empty() && (int) c.choices.size() != juce::roundToInt (c.max - c.min) + 1))
+                    bad << c.id << " ";
+            }
+            check (r, bad.isEmpty() && ids.size() == MonoEngine::Params::table().size(),
+                   "MonoEngine: all " + juce::String ((int) ids.size()) + " controls resolve through Params::find and match the device's parameters" + (bad.isEmpty() ? juce::String() : ": " + bad));
+
+            bool forOk = true;
+            juce::String sizes;
+            for (int m = 0; m < MonoEngine::numModels; ++m)
+            {
+                auto list = MonoEngine::controlsFor (m);
+                bool hasGlide = false;
+                for (auto* c : list)
+                {
+                    const juce::String section (juce::CharPointer_UTF8 (c->section));
+                    hasGlide = hasGlide || juce::String (c->id) == "glide";
+                    const bool shared = section == "Model" || section == "Output";
+                    forOk = forOk && (shared || section.startsWith (MonoEngine::modelName (m)) || juce::String (c->id) == "glide");
+                }
+                forOk = forOk && list.size() > 9 && juce::String (list.front()->id) == "model" && hasGlide == (m != MonoEngine::acid);
+                sizes << MonoEngine::modelName (m) << " " << (int) list.size() << "  ";
+            }
+            check (r, forOk, "MonoEngine: controlsFor gives each model the shared controls and its own (" + sizes.trim() + ")");
+        }
+    }
+
+    //==============================================================================
     r.log << "Poly\n";
     {
         auto& pd = make<PolyDevice> (*edit, PolyDevice::xmlTypeName);
@@ -1527,6 +1680,216 @@ int run (te::Engine& engine, const juce::File& outDir)
         Theme::apply (Themes::light); refreshLookAndFeel();
         snapshot (pd, outDir.getChildFile ("poly-velvet-light.png"));
         Theme::apply (Themes::dark); refreshLookAndFeel();
+    }
+
+    //==============================================================================
+    r.log << "Poly engine\n";
+    {
+        auto& pd = make<PolyDevice> (*edit, PolyDevice::xmlTypeName);
+        auto on  = [] (int note, int vel = 100) { return juce::MidiMessage::noteOn (1, note, (juce::uint8) vel); };
+        auto off = [] (int note) { return juce::MidiMessage::noteOff (1, note); };
+        auto reset = [&] { pd.initialise ({ te::TimePosition(), sr, block }); };
+        auto patchNamed = [] (const char* name)
+        {
+            for (int i = 0; i < PolyEngine::patchCount(); ++i)
+                if (juce::String (PolyEngine::patchName (i)) == name)
+                    return i;
+            return 0;
+        };
+
+        // The engine on its own, in the same pieces the device renders in: blocks, split at each message
+        auto viaEngine = [&] (PolyEngine& e, const std::vector<std::pair<int, juce::MidiMessage>>& midi, int length)
+        {
+            juce::AudioBuffer<float> b (2, length);
+            b.clear();
+            auto* L = b.getWritePointer (0);
+            auto* R = b.getWritePointer (1);
+            for (int start = 0; start < length; start += block)
+            {
+                const int n = juce::jmin (block, length - start);
+                int done = 0;
+                for (auto& [pos, m] : midi)
+                {
+                    if (pos < start || pos >= start + n) continue;
+                    if (pos - start > done) { e.render (L + start + done, R + start + done, pos - start - done); done = pos - start; }
+                    if (m.isNoteOn()) e.noteOn (m.getNoteNumber(), m.getFloatVelocity());
+                    else if (m.isNoteOff()) e.noteOff (m.getNoteNumber());
+                    else if (m.isControllerOfType (1)) e.setModWheel ((float) m.getControllerValue() / 127.0f);
+                    else if (m.isPitchWheel()) e.setPitchBend ((float) (m.getPitchWheelValue() - 8192) / 8192.0f);
+                    else if (m.isAftertouch()) e.setAftertouch (m.getNoteNumber(), (float) m.getAfterTouchValue() / 127.0f);
+                }
+                if (done < n) e.render (L + start + done, R + start + done, n - done);
+            }
+            return b;
+        };
+
+        // The device is PolyEngine: the same notes, bend, mod wheel and aftertouch through the
+        // engine on its own come out the same, sample for sample, in several models and modes
+        {
+            const int s1 = (int) sr;
+            const std::vector<std::pair<int, juce::MidiMessage>> midi = {
+                { 0, on (60) }, { 0, on (64, 70) }, { 4800, on (67, 40) }, { 9000, juce::MidiMessage::aftertouchChange (1, 64, 100) },
+                { s1 / 2, off (60) }, { s1 / 2 + 9600, juce::MidiMessage::controllerEvent (1, 1, 90) }, { s1 / 2 + 13000, juce::MidiMessage::pitchWheel (1, 12000) },
+                { s1, off (64) }, { s1, off (67) }, { s1 + 4000, on (48, 110) }, { s1 + 4100, on (55, 90) },
+                { s1 + 20000, juce::MidiMessage::pitchWheel (1, 3000) }, { 2 * s1, off (48) }, { 2 * s1, off (55) } };
+
+            juce::String report;
+            bool ok = true;
+            for (auto name : { "Prism Pad", "Ring Lead", "Unison Saws", "Quad Pluck", "PWM Strings", "Lush Pad", "Velvet Bass", "Nova Brass", "Chord Stab" })
+            {
+                const int patch = patchNamed (name);
+                pd.loadPatch (patch);
+                reset();
+                juce::AudioBuffer<float> dev (2, 3 * s1);
+                dev.clear();
+                process (pd, dev, midi);
+
+                PolyEngine e;
+                e.setPatch (patch);
+                e.prepare (sr, block);
+                auto eng = viaEngine (e, midi, 3 * s1);
+
+                float worst = 0.0f;
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int i = 0; i < dev.getNumSamples(); ++i)
+                        worst = juce::jmax (worst, std::abs (dev.getSample (ch, i) - eng.getSample (ch, i)));
+                const bool same = worst == 0.0f && dev.getMagnitude (0, dev.getNumSamples()) > 0.02f;
+                ok = ok && same;
+                if (! same) report << name << " (worst " << juce::String (worst) << ") ";
+            }
+            check (r, ok, "the device plays PolyEngine: the engine on its own renders the same, sample for sample, in all four models"
+                          + (report.isEmpty() ? juce::String() : ": " + report));
+            pd.loadPatch (0);
+            reset();        // bend and mod wheel back to rest
+        }
+
+        // prepare() starts it afresh
+        {
+            PolyEngine e;
+            e.setPatch (patchNamed ("Nova Brass"));
+            e.params.drift = 100.0f;
+            const int n = (int) sr;
+            auto once = [&]
+            {
+                e.prepare (sr);
+                juce::AudioBuffer<float> b (2, n);
+                b.clear();
+                e.noteOn (57, 0.8f); e.noteOn (61, 0.6f);
+                e.render (b.getWritePointer (0), b.getWritePointer (1), n);
+                return b;
+            };
+            const auto b1 = once(), b2 = once();
+            bool same = b1.getMagnitude (0, n) > 0.01f;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < n; ++i) same = same && b1.getSample (ch, i) == b2.getSample (ch, i);
+            check (r, same, "PolyEngine: prepare() starts it afresh, so the same notes render the same audio every time");
+        }
+
+        // The engine has the device's patches, and its controls are the device's parameters
+        {
+            bool names = PolyEngine::patchCount() == (int) PolyDevice::patches().size() && PolyEngine::patchCount() == 25;
+            for (int i = 0; i < PolyEngine::patchCount(); ++i)
+                names = names && juce::String (PolyEngine::patchName (i)) == PolyDevice::patches()[(size_t) i].name
+                              && PolyEngine::patchModel (i) == PolyDevice::patches()[(size_t) i].model;
+            check (r, names, "PolyEngine has the device's " + juce::String (PolyEngine::patchCount()) + " patches");
+
+            pd.loadPatch (patchNamed ("Rain Pad"));
+            bool loaded = true;
+            for (auto& [id, member] : PolyEngine::Params::table())
+                if (auto ap = pd.getAutomatableParameterByID (id))
+                    loaded = loaded && std::abs (ap->getCurrentBaseValue() - PolyEngine::patchValue (patchNamed ("Rain Pad"), id)) < 1.0e-4f;
+            check (r, loaded && pd.getModel() == PolyDevice::nova && ! pd.isPatchModified(), "loadPatch sets every parameter to the engine's patch");
+
+            juce::String mismatched;
+            PolyEngine::Params p;
+            std::set<juce::String> ids;
+            int unresolved = 0;
+            for (auto& c : PolyEngine::controls())
+            {
+                ids.insert (c.id);
+                if (p.find (c.id) == nullptr) ++unresolved;
+                auto ap = pd.getAutomatableParameterByID (c.id);
+                if (ap == nullptr) { mismatched << c.id << " "; continue; }
+                const auto range = ap->getValueRange();
+                const bool menuOk = c.choices.empty() || (int) c.choices.size() == juce::roundToInt (c.max - c.min) + 1;
+                if (std::abs (range.getStart() - c.min) > 1.0e-6f || std::abs (range.getEnd() - c.max) > 1.0e-6f
+                    || std::abs (ap->getDefaultValue().value_or (-999.0f) - c.defaultValue) > 1.0e-6f || ! menuOk)
+                    mismatched << c.id << " ";
+            }
+            check (r, unresolved == 0 && ids.size() == PolyEngine::controls().size() && ids.size() == PolyEngine::Params::table().size()
+                      && (int) ids.size() == pd.getAutomatableParameters().size() && mismatched.isEmpty(),
+                   "PolyEngine::controls(): all " + juce::String ((int) ids.size()) + " resolve through Params::find, once each, with the device's ranges and defaults"
+                   + (mismatched.isEmpty() ? juce::String() : ": " + mismatched));
+
+            const juce::StringArray models { "Prism", "Quad", "Velvet", "Nova" };
+            bool forOk = true;
+            juce::String counts;
+            size_t total = 0;
+            for (int m = 0; m < PolyEngine::numModels; ++m)
+            {
+                auto list = PolyEngine::controlsFor (m);
+                int shared = 0;
+                for (auto* c : list)
+                {
+                    const juce::String section (juce::CharPointer_UTF8 (c->section));
+                    bool other = false;
+                    for (int o = 0; o < PolyEngine::numModels; ++o)
+                        if (o != m && section.startsWith (models[o] + " ")) other = true;
+                    forOk = forOk && ! other;
+                    if (! section.startsWith (models[m] + " ")) ++shared;
+                }
+                forOk = forOk && shared == 11 && juce::String (list.front()->id) == "model";
+                total += list.size() - (size_t) shared;
+                counts << models[m] << " " << (int) list.size() << "  ";
+            }
+            check (r, forOk && total + 11 == PolyEngine::controls().size(),
+                   "PolyEngine::controlsFor: the 11 shared controls and that model's own (" + counts.trim() + ")");
+        }
+
+        // A control written straight into params between renders is heard in the next render
+        {
+            auto run = [&] (bool change)
+            {
+                PolyEngine e;
+                e.setPatch (patchNamed ("Velvet Strings"));
+                e.prepare (sr);
+                juce::AudioBuffer<float> b (2, 2 * block);
+                b.clear();
+                e.noteOn (57, 0.8f);
+                for (int i = 0; i < 40; ++i)
+                {
+                    b.clear();
+                    e.render (b.getWritePointer (0), b.getWritePointer (1), block);
+                }
+                if (change)
+                {
+                    *e.params.find ("vcutoff") = 300.0f;
+                    *e.params.find ("vhpf") = 3.0f;
+                }
+                b.clear();
+                e.render (b.getWritePointer (0), b.getWritePointer (1), block);
+                return b;
+            };
+            const auto before = run (false), after = run (true);
+            double diff = 0, energy = 0;
+            for (int i = 0; i < block; ++i)
+            {
+                diff += std::pow (before.getSample (0, i) - after.getSample (0, i), 2.0);
+                energy += std::pow (before.getSample (0, i), 2.0);
+            }
+            check (r, energy > 0.0 && diff > energy * 0.05,
+                   "PolyEngine: writing a control into params between renders changes the very next render (difference " + juce::String (10.0 * std::log10 ((diff + 1e-20) / (energy + 1e-20)), 1) + " dB)");
+        }
+
+        // Latency: the device reports the engine's
+        {
+            PolyEngine e;
+            e.prepare (sr);
+            reset();
+            const double latency = e.latencySamples();
+            check (r, latency > 0.0 && latency < 8.0 && std::abs (pd.getLatencySeconds() - latency / sr) < 1.0e-12,
+                   "the device's latency is the engine's downsampling delay (" + juce::String (latency, 3) + " samples)");
+        }
     }
 
     //==============================================================================
@@ -1822,6 +2185,166 @@ int run (te::Engine& engine, const juce::File& outDir)
     }
 
     //==============================================================================
+    r.log << "Modular engine\n";
+    {
+        auto on  = [] (int note, int vel = 100) { return juce::MidiMessage::noteOn (1, note, (juce::uint8) vel); };
+        auto off = [] (int note) { return juce::MidiMessage::noteOff (1, note); };
+        const int s1 = (int) sr;
+        const std::vector<std::pair<int, juce::MidiMessage>> phrase = {
+            { 0, on (48) }, { 0, on (55, 70) }, { 4800, on (60, 40) }, { s1 / 2, off (48) },
+            { s1 / 2 + 9600, juce::MidiMessage::controllerEvent (1, 1, 90) }, { s1, off (55) }, { s1, off (60) },
+            { s1 + 4800, juce::MidiMessage::pitchWheel (1, 12000) }, { s1 + 9600, on (43, 110) }, { 2 * s1, off (43) } };
+
+        // The engine on its own, fed the same notes in the same pieces the device renders in:
+        // blocks, split at each message
+        auto playEngine = [&] (ModularEngine& e, const std::vector<std::pair<int, juce::MidiMessage>>& midi, int length)
+        {
+            juce::AudioBuffer<float> b (2, length);
+            b.clear();
+            auto* L = b.getWritePointer (0);
+            auto* R = b.getWritePointer (1);
+            for (int start = 0; start < length; start += block)
+            {
+                const int n = juce::jmin (block, length - start);
+                int done = 0;
+                for (auto& [pos, m] : midi)
+                {
+                    if (pos < start || pos >= start + n) continue;
+                    if (pos - start > done) { e.render (L + start + done, R + start + done, pos - start - done); done = pos - start; }
+                    if (m.isNoteOn()) e.noteOn (m.getNoteNumber(), m.getFloatVelocity());
+                    else if (m.isNoteOff()) e.noteOff (m.getNoteNumber());
+                    else if (m.isController()) e.setModWheel ((float) m.getControllerValue() / 127.0f);
+                    else if (m.isPitchWheel()) e.setPitchBend ((float) (m.getPitchWheelValue() - 8192) / 8192.0f);
+                }
+                if (done < n) e.render (L + start + done, R + start + done, n - done);
+            }
+            return b;
+        };
+        auto worstDifference = [] (const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b)
+        {
+            float worst = 0.0f;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < a.getNumSamples(); ++i)
+                    worst = juce::jmax (worst, std::abs (a.getSample (ch, i) - b.getSample (ch, i)));
+            return worst;
+        };
+
+        // The device is ModularEngine: a factory patch on the device, macros moved, and the same
+        // patch in the engine render the same, sample for sample
+        auto& md = make<ModularDevice> (*edit, ModularDevice::xmlTypeName);
+        for (auto [index, voiceCount] : { std::pair<int, float> { 1, 1.0f }, { 3, 1.0f }, { 6, 3.0f } })
+        {
+            md.loadPatch (index);
+            setParam (md.voices, voiceCount);
+            setParam (md.volume, -3.0f);
+            setParam (md.macros[0], 0.8f); setParam (md.macros[1], 0.25f); setParam (md.macros[2], 0.65f); setParam (md.macros[3], 0.1f);
+            md.initialise ({ te::TimePosition(), sr, block });
+            juce::AudioBuffer<float> viaDevice (2, 3 * s1);
+            viaDevice.clear();
+            process (md, viaDevice, phrase);
+
+            ModularEngine e;
+            e.setPatch (index);
+            e.params.voices = md.voices.get();
+            e.params.volume = md.volume.get();
+            e.params.macro1 = md.macros[0].get(); e.params.macro2 = md.macros[1].get();
+            e.params.macro3 = md.macros[2].get(); e.params.macro4 = md.macros[3].get();
+            e.prepare (sr, block);
+            auto viaEngine = playEngine (e, phrase, 3 * s1);
+
+            const float worst = worstDifference (viaDevice, viaEngine);
+            check (r, worst == 0.0f && viaDevice.getMagnitude (0, viaDevice.getNumSamples()) > 0.05f,
+                   juce::String ("the device plays ModularEngine: ") + ModularEngine::patchName (index) + " (macros moved) renders the same in the engine on its own, sample for sample (worst "
+                       + juce::String (worst) + ")");
+        }
+        setParam (md.volume, -6.0f);
+        for (auto& m : md.macros) setParam (m, 0.5f);
+
+        // prepare() starts it afresh
+        {
+            ModularEngine e;
+            e.setPatch (8);     // Generative Garden: random voltages, delay
+            e.prepare (sr);
+            auto a = playEngine (e, phrase, 2 * s1);
+            e.prepare (sr);
+            auto b = playEngine (e, phrase, 2 * s1);
+            check (r, worstDifference (a, b) == 0.0f && a.getMagnitude (0, a.getNumSamples()) > 0.01f,
+                   "prepare() starts it afresh: the same notes render the same audio every time");
+        }
+
+        // The patches: the device's, by name, with the device's voice counts and macro names
+        {
+            bool same = ModularEngine::patchCount() == (int) ModularDevice::patches().size();
+            for (int i = 0; same && i < ModularEngine::patchCount(); ++i)
+            {
+                md.loadPatch (i);
+                same = juce::String (ModularEngine::patchName (i)) == ModularDevice::patches()[(size_t) i].name
+                       && ModularEngine::patchValue (i, "voices") == (float) ModularDevice::patches()[(size_t) i].voices
+                       && md.macroName (0) == ModularEngine::macroName (i, 0) && md.macroName (3) == ModularEngine::macroName (i, 3);
+            }
+            check (r, same && juce::String (ModularEngine::macroName (0, 0)) == "Cutoff",
+                   "the engine has the device's patches (" + juce::String (ModularEngine::patchCount()) + "), voice counts and macro names");
+        }
+
+        // With the macros at their middle (0.5) a factory patch sounds exactly as it does without them patched in
+        {
+            juce::String moved;
+            bool neutral = true;
+            for (int i = 0; i < ModularEngine::patchCount(); ++i)
+            {
+                auto bare = ModularEngine::patches()[(size_t) i];
+                bare.macros.clear();
+                ModularEngine with, without;
+                with.setPatch (i);
+                without.setPatch (i);
+                without.build (Modular::describe (bare));
+                with.prepare (sr); without.prepare (sr);
+                neutral = neutral && worstDifference (playEngine (with, phrase, s1), playEngine (without, phrase, s1)) == 0.0f;
+            }
+            check (r, neutral, "every factory patch with its macros at their middle (0.5) renders exactly as it does without them");
+        }
+
+        // Each control is an engine parameter and a device parameter, with the device's range
+        {
+            bool ok = true;
+            juce::String wrong;
+            ModularEngine::Params defaults;
+            for (auto& c : ModularEngine::controls())
+            {
+                auto* v = defaults.find (c.id);
+                auto ap = md.getAutomatableParameterByID (c.id);
+                if (v == nullptr || ap == nullptr || *v != c.defaultValue
+                    || std::abs (ap->getValueRange().getStart() - c.min) > 1.0e-4f || std::abs (ap->getValueRange().getEnd() - c.max) > 1.0e-4f
+                    || std::abs (ap->getDefaultValue().value_or (-1000.0f) - c.defaultValue) > 1.0e-4f)
+                { ok = false; wrong << c.id << " "; }
+            }
+            check (r, ok && ModularEngine::controls().size() == ModularEngine::Params::table().size(),
+                   "every Modular control is an engine and a device parameter, with its range and default" + (wrong.isEmpty() ? juce::String() : " (not: " + wrong + ")"));
+        }
+
+        // A macro written straight into params between renders is heard in the next render
+        {
+            ModularEngine a, b;
+            a.setPatch (0); b.setPatch (0);
+            a.prepare (sr); b.prepare (sr);
+            juce::AudioBuffer<float> outA (2, s1), outB (2, s1);
+            outA.clear(); outB.clear();
+            a.noteOn (57, 0.9f); b.noteOn (57, 0.9f);
+            a.render (outA.getWritePointer (0), outA.getWritePointer (1), s1 / 2);
+            b.render (outB.getWritePointer (0), outB.getWritePointer (1), s1 / 2);
+            *a.params.find ("macro1") = 0.95f;      // Cutoff, wide open
+            a.render (outA.getWritePointer (0, s1 / 2), outA.getWritePointer (1, s1 / 2), block);
+            b.render (outB.getWritePointer (0, s1 / 2), outB.getWritePointer (1, s1 / 2), block);
+            float before = 0.0f, after = 0.0f;
+            for (int i = 0; i < s1 / 2 + block; ++i)
+                (i < s1 / 2 ? before : after) = juce::jmax (i < s1 / 2 ? before : after, std::abs (outA.getSample (0, i) - outB.getSample (0, i)));
+            check (r, before == 0.0f && after > 1.0e-3f,
+                   "a macro set straight into params between renders changes the very next render (by up to " + juce::String (after, 3) + ")");
+        }
+        md.loadPatch (0);
+    }
+
+    //==============================================================================
     r.log << "Organic\n";
     {
         auto& od = make<OrganicDevice> (*edit, OrganicDevice::xmlTypeName);
@@ -2113,6 +2636,149 @@ int run (te::Engine& engine, const juce::File& outDir)
         snapshot (od, outDir.getChildFile ("organic-light.png"));
         Theme::apply (Themes::dark); refreshLookAndFeel();
         reset();
+
+        // The device is OrganicEngine: the same notes through the engine on its own, with the
+        // built-in sources it builds itself, come out the same, sample for sample (mod wheel,
+        // breath, expression, pressure, aftertouch, bend and pedal included)
+        {
+            const int patch = 24;                   // Wind Glass: built-in sources only
+            od.loadPatch (patch);
+            od.loadSourcesNow();
+            setParam (od.life, 60.0f);
+            setParam (od.tideDepth, 70.0f);
+            reset();
+            const int s1 = (int) sr;
+            std::vector<std::pair<int, juce::MidiMessage>> midi = {
+                { 0, on (60) }, { 0, on (64, 70) }, { 4800, on (67, 40) }, { 9000, juce::MidiMessage::controllerEvent (1, 64, 127) },
+                { s1, off (60) }, { s1 + 2000, off (64) }, { s1 + 9600, juce::MidiMessage::controllerEvent (1, 1, 90) },
+                { s1 + 14000, juce::MidiMessage::controllerEvent (1, 64, 0) }, { s1 + 16000, on (72, 100) },
+                { s1 + 20000, juce::MidiMessage::controllerEvent (1, 2, 40) }, { s1 + 24000, juce::MidiMessage::aftertouchChange (1, 72, 110) },
+                { s1 + 28800, juce::MidiMessage::pitchWheel (1, 12000) }, { s1 + 30000, juce::MidiMessage::controllerEvent (1, 11, 64) },
+                { s1 + 33600, on (48, 110) }, { s1 + 40000, juce::MidiMessage::channelPressureChange (1, 100) },
+                { 2 * s1 + 12000, off (48) }, { 2 * s1 + 12000, off (72) }, { 2 * s1 + 12000, off (67) } };
+            auto viaDevice = play (midi, 4.0);
+            writeWav (outDir.getChildFile ("organic-phrase.wav"), viaDevice);
+
+            OrganicEngine e;
+            e.setPatch (patch);
+            e.params.life = 60.0f;
+            e.params.tideDepth = 70.0f;
+            e.useBuiltinsFor (patch);
+            e.prepare (sr, block);
+            juce::AudioBuffer<float> viaEngine (2, viaDevice.getNumSamples());
+            viaEngine.clear();
+            auto* L = viaEngine.getWritePointer (0);
+            auto* R = viaEngine.getWritePointer (1);
+
+            // In the same pieces the device renders in: blocks, split at each message
+            for (int start = 0; start < viaEngine.getNumSamples(); start += block)
+            {
+                const int n = juce::jmin (block, viaEngine.getNumSamples() - start);
+                int done = 0;
+                for (auto& [pos, m] : midi)
+                {
+                    if (pos < start || pos >= start + n) continue;
+                    if (pos - start > done) { e.render (L + start + done, R + start + done, pos - start - done); done = pos - start; }
+                    if (m.isNoteOn()) e.noteOn (m.getNoteNumber(), m.getFloatVelocity());
+                    else if (m.isNoteOff()) e.noteOff (m.getNoteNumber());
+                    else if (m.isPitchWheel()) e.setPitchBend ((float) (m.getPitchWheelValue() - 8192) / 8192.0f);
+                    else if (m.isControllerOfType (1)) e.setModWheel ((float) m.getControllerValue() / 127.0f);
+                    else if (m.isControllerOfType (2)) e.setBreath ((float) m.getControllerValue() / 127.0f);
+                    else if (m.isControllerOfType (11)) e.setExpression ((float) m.getControllerValue() / 127.0f);
+                    else if (m.isChannelPressure()) e.setChannelPressure ((float) m.getChannelPressureValue() / 127.0f);
+                    else if (m.isAftertouch()) e.setNotePressure (m.getNoteNumber(), (float) m.getAfterTouchValue() / 127.0f);
+                    else if (m.isSustainPedalOn()) e.setSustainPedal (true);
+                    else if (m.isSustainPedalOff()) e.setSustainPedal (false);
+                }
+                if (done < n) e.render (L + start + done, R + start + done, n - done);
+            }
+
+            float worst = 0.0f;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < viaDevice.getNumSamples(); ++i)
+                    worst = juce::jmax (worst, std::abs (viaDevice.getSample (ch, i) - viaEngine.getSample (ch, i)));
+            check (r, worst == 0.0f && viaDevice.getMagnitude (0, viaDevice.getNumSamples()) > 0.05f,
+                   "the device plays OrganicEngine: the engine on its own, with its own built-in sources, renders the same, sample for sample (worst "
+                   + juce::String (worst) + ")");
+
+            // prepare() starts it afresh
+            OrganicEngine again;
+            again.setPatch (patch);
+            again.useBuiltinsFor (patch);
+            again.prepare (sr);
+            juce::AudioBuffer<float> b1 (2, s1), b2 (2, s1);
+            b1.clear(); b2.clear();
+            again.noteOn (60, 0.8f); again.setModWheel (0.5f); again.render (b1.getWritePointer (0), b1.getWritePointer (1), s1);
+            again.prepare (sr);
+            again.noteOn (60, 0.8f); again.setModWheel (0.5f); again.render (b2.getWritePointer (0), b2.getWritePointer (1), s1);
+            bool same = b1.getMagnitude (0, s1) > 0.01f;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < s1; ++i) same = same && b1.getSample (ch, i) == b2.getSample (ch, i);
+            check (r, same, "OrganicEngine prepare() starts it afresh: the same notes render the same audio every time");
+
+            // A control written straight into params takes effect at the next render
+            {
+                auto firstHalf = [&] (OrganicEngine& en, juce::AudioBuffer<float>& b)
+                {
+                    b.clear();
+                    en.prepare (sr);
+                    en.noteOn (60, 0.8f);
+                    en.render (b.getWritePointer (0), b.getWritePointer (1), s1 / 2);
+                };
+                juce::AudioBuffer<float> plainRun (2, s1), changed (2, s1);
+                firstHalf (again, plainRun);
+                again.render (plainRun.getWritePointer (0, s1 / 2), plainRun.getWritePointer (1, s1 / 2), s1 / 2);
+                firstHalf (again, changed);
+                bool changedAll = true;
+                for (auto [id, value] : { std::pair<const char*, float> { "bright", 600.0f }, { "volume", -20.0f } })
+                {
+                    auto* v = again.params.find (id);
+                    changedAll = changedAll && v != nullptr;
+                    if (v != nullptr) *v = value;
+                }
+                again.render (changed.getWritePointer (0, s1 / 2), changed.getWritePointer (1, s1 / 2), s1 / 2);
+                bool firstSame = true;
+                for (int i = 0; i < s1 / 2; ++i) firstSame = firstSame && plainRun.getSample (0, i) == changed.getSample (0, i);
+                const int a = s1 / 2, n = 2400;
+                const auto before = plainRun.getRMSLevel (0, a, n), after = changed.getRMSLevel (0, a, n);
+                check (r, changedAll && firstSame && after < before * 0.5f,
+                       "a control written into OrganicEngine::params between renders takes effect in the next one (RMS "
+                       + juce::String (juce::Decibels::gainToDecibels (before), 1) + " dB -> " + juce::String (juce::Decibels::gainToDecibels (after), 1) + " dB)");
+                again.setPatch (patch);
+            }
+
+            // Patches, sources and controls
+            bool patchesMatch = OrganicEngine::patchCount() == (int) OrganicDevice::patches().size()
+                                && juce::String (OrganicEngine::patchName (1)) == "Glass Breath";
+            for (int i = 0; i < OrganicEngine::patchCount(); ++i)
+                patchesMatch = patchesMatch && juce::String (OrganicEngine::patchSource (i, 0)) == OrganicDevice::patches()[(size_t) i].a
+                                            && juce::String (OrganicEngine::patchSource (i, 1)) == OrganicDevice::patches()[(size_t) i].b;
+            check (r, patchesMatch, "OrganicEngine has the device's patches, source keys included");
+
+            {
+                bool allFound = true, rangesMatch = true;
+                OrganicEngine::Params defaults;
+                juce::String wrong;
+                for (auto& c : OrganicEngine::controls())
+                {
+                    auto* v = defaults.find (c.id);
+                    auto ap = od.getAutomatableParameterByID (c.id);
+                    if (v == nullptr || ap == nullptr) { allFound = false; wrong << c.id << " "; continue; }
+                    auto range = ap->getValueRange();
+                    if (*v != c.defaultValue || std::abs (range.getStart() - c.min) > 1.0e-4f || std::abs (range.getEnd() - c.max) > 1.0e-4f
+                        || std::abs (ap->getDefaultValue().value_or (-999.0f) - c.defaultValue) > 1.0e-6f
+                        || (! c.choices.empty() && (int) c.choices.size() != juce::roundToInt (c.max - c.min) + 1))
+                    { rangesMatch = false; wrong << c.id << " "; }
+                }
+                check (r, allFound && rangesMatch && OrganicEngine::controls().size() == OrganicEngine::Params::table().size()
+                          && (int) OrganicEngine::controls().size() == (int) od.getAutomatableParameters().size(),
+                       "every Organic control is a parameter, with its range and default" + (wrong.isEmpty() ? juce::String() : " (not: " + wrong + ")"));
+            }
+
+            od.loadPatch (0);
+            od.loadSourcesNow();
+            reset();
+        }
     }
 
     //==============================================================================
@@ -2429,6 +3095,25 @@ int run (te::Engine& engine, const juce::File& outDir)
             check (r, same, "prepare() starts it afresh: the same notes render the same audio every time");
             check (r, HazeEngine::patchCount() == (int) HazeDevice::patches().size() && juce::String (HazeEngine::patchName (1)) == "Pastel Mall",
                    "the engine has the device's patches");
+
+            // The controls the phone draws: each one is a real parameter, with the device's range and default
+            {
+                bool allFound = true, rangesMatch = true;
+                HazeEngine::Params defaults;
+                juce::String wrong;
+                for (auto& c : HazeEngine::controls())
+                {
+                    auto* v = defaults.find (c.id);
+                    auto ap = hz.getAutomatableParameterByID (c.id);
+                    if (v == nullptr || ap == nullptr) { allFound = false; wrong << c.id << " "; continue; }
+                    auto range = ap->getValueRange();
+                    if (*v != c.defaultValue || std::abs (range.getStart() - c.min) > 1.0e-4f || std::abs (range.getEnd() - c.max) > 1.0e-4f
+                        || (! c.choices.empty() && (int) c.choices.size() != juce::roundToInt (c.max - c.min) + 1))
+                    { rangesMatch = false; wrong << c.id << " "; }
+                }
+                check (r, allFound && rangesMatch && HazeEngine::controls().size() == HazeEngine::Params::table().size(),
+                       "every Haze control is a parameter, with its range and default" + (wrong.isEmpty() ? juce::String() : " (not: " + wrong + ")"));
+            }
             hz.loadPatch (0);
             reset();        // bend and mod wheel back to rest
         }
