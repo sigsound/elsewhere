@@ -19,6 +19,28 @@ namespace elsewhere
     that needs nothing of JUCE beyond jlimit, jmin, jmax and MathConstants, so it also builds
     outside it.
 */
+//==============================================================================
+/**
+    One control of an instrument engine, as a screen draws it: a knob, a switch or a menu.
+
+    Each engine lists its controls in controls(), in the order its device panel shows them,
+    by the same IDs as its Params::table() (and its device's parameters). step 0 means
+    continuous, step 1 whole numbers; choices is non-empty for a menu (the value is the index
+    of the choice). unit is what the value is in: "%", "s", "ms", "Hz", "dB", "st", "ct",
+    "oct", "x" or "".
+*/
+struct SynthControl
+{
+    const char* id;
+    const char* name;
+    const char* section;
+    float min, max, defaultValue;
+    float step;
+    bool logarithmic;
+    const char* unit;
+    std::vector<const char*> choices;
+};
+
 namespace SynthCore
 {
     /** A repeatable random sequence: the same numbers from the same seed as juce::Random. */

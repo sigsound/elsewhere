@@ -5,6 +5,7 @@
 
 #include "SynthCore.h"
 #include "SpaceDsp.h"
+#include "EngineControl.h"
 
 #include <cstring>
 #include <string>
@@ -63,6 +64,41 @@ public:
     };
 
     Params params;
+
+    //==============================================================================
+    using Control = EngineControl;
+
+    /** Every control, in the order the device panel shows them. */
+    static const std::vector<Control>& controls()
+    {
+        static const std::vector<Control> all = {
+            { "wave",      "Wave",      "Tone",     0, 3, saw, 1, false, "", { "Saw", "Square", "Triangle", "Soft" } },
+            { "detune",    "Detune",    "Tone",     0, 50, 12, 0, false, "ct", {} },
+            { "sub",       "Sub",       "Tone",     0, 100, 20, 0, false, "%", {} },
+            { "noise",     "Noise",     "Tone",     0, 100, 0, 0, false, "%", {} },
+            { "range",     "Range",     "Tone",     -2, 1, 0, 1, false, "oct", {} },
+            { "cutoff",    "Cutoff",    "Filter",   80, 18000, 2400, 0, true, "Hz", {} },
+            { "res",       "Resonance", "Filter",   0, 100, 15, 0, false, "%", {} },
+            { "envamt",    "Env",       "Filter",   0, 100, 30, 0, false, "%", {} },
+            { "attack",    "Attack",    "Envelope", 0.001f, 6, 0.25f, 0, true, "s", {} },
+            { "decay",     "Decay",     "Envelope", 0.02f, 6, 1.2f, 0, true, "s", {} },
+            { "sustain",   "Sustain",   "Envelope", 0, 100, 75, 0, false, "%", {} },
+            { "release",   "Release",   "Envelope", 0.02f, 8, 1.4f, 0, true, "s", {} },
+            { "wow",       "Wow",       "Tape",     0, 100, 35, 0, false, "%", {} },
+            { "flutter",   "Flutter",   "Tape",     0, 100, 20, 0, false, "%", {} },
+            { "age",       "Age",       "Tape",     0, 100, 40, 0, false, "%", {} },
+            { "speed",     "Speed",     "Tape",     50, 100, 92, 0, false, "%", {} },
+            { "chroma",    "Chroma",    "VHS",      0, 3, 1, 1, false, "", { "Off", "I", "II", "I+II" } },
+            { "tracking",  "Tracking",  "VHS",      0, 100, 10, 0, false, "%", {} },
+            { "bandwidth", "Bandwidth", "VHS",      1500, 20000, 7000, 0, true, "Hz", {} },
+            { "hiss",      "Hiss",      "VHS",      0, 100, 20, 0, false, "%", {} },
+            { "space",     "Space",     "Haze",     0, 100, 60, 0, false, "%", {} },
+            { "smix",      "Mix",       "Haze",     0, 100, 30, 0, false, "%", {} },
+            { "drift",     "Drift",     "Haze",     0, 100, 30, 0, false, "%", {} },
+            { "volume",    "Volume",    "Haze",     -60, 6, -6, 0, false, "dB", {} },
+        };
+        return all;
+    }
 
     //==============================================================================
     // Patches: each sets the controls it names and leaves the rest at their defaults
