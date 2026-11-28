@@ -45,6 +45,18 @@ public:
     virtual juce::Point<int> getWindowViewSize() const              { return {}; }
 
     //==============================================================================
+    // For a phone remote (SomewhereLink.h), which redraws the device on its own screen
+
+    /** The patch or kit as the device's own display shows it ("H004 LATE BROADCAST"); empty if it has none. */
+    virtual juce::String getPatchName() const                       { return {}; }
+
+    /** Loads the next (1) or previous (-1) patch or kit, wrapping round; false if the device has none. */
+    virtual bool stepPatch (int /*delta*/)                          { return false; }
+
+    /** Pad names, in note order, for a device played from pads; empty otherwise. */
+    virtual juce::StringArray getPadNames() const                   { return {}; }
+
+    //==============================================================================
     int getNumOutputChannelsGivenInputs (int n) override   { return juce::jmin (n, 2); }
     BusLayout getBusses() const override                   { return BusLayout::singleStereoInOut(); }
     void deinitialise() override                           {}

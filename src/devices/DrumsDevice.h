@@ -141,6 +141,24 @@ public:
     // Kits
     int getKitIndex() const                 { return DrumKits::indexOf (state.getProperty ("kit", "classic").toString()); }
 
+    juce::String getPatchName() const override      { return DrumKits::kits()[(size_t) getKitIndex()].name; }
+
+    bool stepPatch (int delta) override
+    {
+        const int count = (int) DrumKits::kits().size();
+        edit.getUndoManager().beginNewTransaction ("Change drum kit");
+        setKit ((getKitIndex() + delta + count) % count);
+        return true;
+    }
+
+    juce::StringArray getPadNames() const override
+    {
+        juce::StringArray names;
+        for (int pad = 0; pad < numPads; ++pad)
+            names.add (getPadDisplayName (pad));
+        return names;
+    }
+
     void setKit (int index)
     {
         index = juce::jlimit (0, (int) DrumKits::kits().size() - 1, index);

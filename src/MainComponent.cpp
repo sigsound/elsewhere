@@ -614,14 +614,20 @@ void MainComponent::importSomewhereBeat (const juce::File& folder, te::TimePosit
         auto r = SomewhereBeat::build (edit, b, local, start, after,
                                        [proj, sounds = b.name + " Sounds"] (const juce::File& f) { return proj->importAudioFile (f, sounds); });
 
-        if (replacing.isNotEmpty())
+        juce::Array<te::AudioTrack*> made (r.stems);
+        made.addArray (r.keysBySound);
+        made.add (r.drums, r.keys);
+
+        for (auto* t : made)
         {
-            juce::Array<te::AudioTrack*> made (r.stems);
-            made.addArray (r.keysBySound);
-            made.add (r.drums, r.keys);
-            for (auto* t : made)
-                if (t != nullptr)
-                    t->state.setProperty (sentAs, replacing, &edit.getUndoManager());
+            if (t == nullptr)
+                continue;
+
+            if (replacing.isNotEmpty())
+                t->state.setProperty (sentAs, replacing, &edit.getUndoManager());
+
+            // Ready for the phone's FX pad: each of the beat's tracks gets its Somewhere Control
+            SomewhereControlDevice::findOrAddTo (*t);
         }
 
         if (auto* focus = r.drums != nullptr ? r.drums : r.keys != nullptr ? r.keys : r.stems.getFirst())

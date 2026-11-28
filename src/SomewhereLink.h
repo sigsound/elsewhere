@@ -605,6 +605,7 @@ private:
         bool lastTransportPlaying = true;      // so the first tick always reports the transport
         juce::uint32 monitorToken = 0;
         double lastTransportBpm = -1;
+        bool lastTransportLooping = false, lastTransportRecording = false;
 
         // Chaos pad touch in progress: where the controls were before, to spring back to
         ChaosTargets chaos;
@@ -743,6 +744,9 @@ private:
         else if (type == "solo")    setSwitch (*c, "solo", (bool) msg["on"]);
         else if (type == "arm")     setSwitch (*c, "arm", (bool) msg["on"]);
         else if (type == "knob")    turnKnob (*c, msg);
+        else if (type == "patch")   stepPatch (msg);
+        else if (type == "device")  setDeviceOn (msg);
+        else if (type == "loop")    setLooping ((bool) msg["on"]);
     }
 
     /** Phones you've allowed. ELSEWHERE_SOMEWHERE_TRUST=<tag> pre-allows one (for scripted tests). */
@@ -925,7 +929,7 @@ private:
     struct TransportState
     {
         double bpm = 120, beat = 0, latency = 0;
-        bool playing = false, recording = false;
+        bool playing = false, recording = false, looping = false;
         int beatsPerBar = 4;
     };
 
@@ -936,6 +940,7 @@ private:
         TransportState t;
         t.playing = transport.isPlaying();
         t.recording = transport.isRecording();
+        t.looping = transport.looping;
         t.bpm = edit.tempoSequence.getTempo (0)->getBpm();
         t.beat = edit.tempoSequence.toBeats (transport.getPosition()).inBeats();
         t.beatsPerBar = edit.tempoSequence.getTimeSig (0)->numerator;
@@ -946,17 +951,21 @@ private:
     void sendTransport (Connection& c, const TransportState& t)
     {
         // While playing the phone needs a steady stream to stay locked; when stopped, only changes
-        if (! t.playing && ! c.lastTransportPlaying && std::abs (t.bpm - c.lastTransportBpm) < 0.001)
+        if (! t.playing && ! c.lastTransportPlaying && std::abs (t.bpm - c.lastTransportBpm) < 0.001
+             && t.looping == c.lastTransportLooping && t.recording == c.lastTransportRecording)
             return;
 
         c.lastTransportPlaying = t.playing;
         c.lastTransportBpm = t.bpm;
+        c.lastTransportLooping = t.looping;
+        c.lastTransportRecording = t.recording;
 
         auto m = message ("transport");
         auto* o = m.getDynamicObject();
         o->setProperty ("bpm", t.bpm);
         o->setProperty ("playing", t.playing);
         o->setProperty ("recording", t.recording);
+        o->setProperty ("looping", t.looping);
         o->setProperty ("beat", t.beat);
         o->setProperty ("beatsPerBar", t.beatsPerBar);
         o->setProperty ("latency", t.latency);
@@ -982,10 +991,60 @@ private:
         edit.tempoSequence.getTempo (0)->setBpm (bpm);
     }
 
+    /** record { on }: Elsewhere's record. What the phone moves while it records is written as automation,
+        so writing automation is turned on for the recording and back to how it was afterwards. */
     void setRecording (bool on)
     {
-        if (project.getEdit().getTransport().isRecording() != on)
-            EngineHelpers::toggleRecord (project.getEdit());
+        auto& edit = project.getEdit();
+        auto& arm = edit.getAutomationRecordManager();
+
+        if (on && ! edit.getTransport().isRecording())
+        {
+            automationWasWriting = arm.isWritingAutomation();
+            arm.setWritingAutomation (true);
+        }
+
+        if (edit.getTransport().isRecording() != on)
+            EngineHelpers::toggleRecord (edit);
+
+        if (! on)
+            arm.setWritingAutomation (automationWasWriting);
+    }
+
+    bool automationWasWriting = false;
+
+    /** loop { on }: Elsewhere's loop. */
+    void setLooping (bool on)
+    {
+        auto& edit = project.getEdit();
+        if (edit.getTransport().looping.get() != on)
+            EngineHelpers::setLooping (edit, on);
+    }
+
+    te::Plugin* findDevice (const juce::var& id)
+    {
+        if (auto* t = target())
+            for (auto* p : t->pluginList)
+                if (p->itemID == te::EditItemID::fromVar (id))
+                    return p;
+        return nullptr;
+    }
+
+    /** patch { device, step }: the next (1) or previous (-1) patch or kit, as the device's own arrows do. */
+    void stepPatch (const juce::var& msg)
+    {
+        if (auto* own = dynamic_cast<ElsewhereDevice*> (findDevice (msg["device"])))
+            own->stepPatch ((int) msg["step"] < 0 ? -1 : 1);
+    }
+
+    /** device { device, on }: turns a device on or off. */
+    void setDeviceOn (const juce::var& msg)
+    {
+        if (auto* p = findDevice (msg["device"]))
+        {
+            p->edit.getUndoManager().beginNewTransaction (juce::String ((bool) msg["on"] ? "Turn on " : "Turn off ") + p->getName());
+            p->setEnabled ((bool) msg["on"]);
+        }
     }
 
     void take (Connection& c, const juce::var& msg, const juce::MemoryBlock& wav)
@@ -1026,10 +1085,12 @@ private:
     //==============================================================================
     // The remote: pick a channel, then its switches and its devices' knobs
 
-    static constexpr int maxKnobsPerDevice = 48;
+    static constexpr int maxKnobsPerDevice = 160;   // Poly has 128
 
-    /** The track's devices and their knobs: { id, name, on, knobs: [{ id, name, value 0..1, text, states }] }.
-        The mixer's own volume and meter aren't devices here; the fader and pan cover them. */
+    /** The track's devices and their knobs: { id, type, name, on, patch?, pads?, knobs: [{ id, name, value 0..1, text,
+        states?, choices? }] }. type is the plugin type, so the phone can draw Elsewhere's own devices their own way;
+        patch is the patch or kit the device's display shows (and the phone can step it); pads names a drum
+        device's pads in note order. The mixer's own volume and meter aren't devices here; the fader and pan cover them. */
     static juce::var deviceList (te::Track& t)
     {
         juce::Array<juce::var> devices;
@@ -1050,15 +1111,55 @@ private:
                 k->setProperty ("name", ap->getParameterName());
                 k->setProperty ("value", ap->getCurrentNormalisedValue());
                 k->setProperty ("text", ap->getCurrentValueAsStringWithLabel());
-                if (ap->isDiscrete())
-                    k->setProperty ("states", ap->getNumberOfStates());
+                // Elsewhere's own devices step their choices by 1 rather than calling themselves discrete
+                int states = ap->isDiscrete() ? ap->getNumberOfStates() : 0;
+                if (states == 0 && ap->valueRange.interval >= 1.0f)
+                    if (auto n = juce::roundToInt ((ap->valueRange.end - ap->valueRange.start) / ap->valueRange.interval) + 1; n >= 2 && n <= 32)
+                        states = n;
+
+                if (states >= 2)
+                {
+                    k->setProperty ("states", states);
+
+                    if (states >= 2 && states <= 32)
+                    {
+                        auto labels = ap->getAllLabels();
+                        if (labels.size() != states)
+                        {
+                            labels.clear();
+                            for (int i = 0; i < states; ++i)
+                                labels.add (ap->valueToString (ap->valueRange.convertFrom0to1 ((float) i / (float) (states - 1))));
+                        }
+
+                        juce::Array<juce::var> choices;
+                        for (auto& l : labels)
+                            choices.add (l);
+                        k->setProperty ("choices", choices);
+                    }
+                }
                 knobs.add (juce::var (k));
             }
 
             auto* d = new juce::DynamicObject();
             d->setProperty ("id", p->itemID.toString());
+            d->setProperty ("type", p->getPluginType());
             d->setProperty ("name", p->getName());
             d->setProperty ("on", p->isEnabled());
+
+            if (auto* own = dynamic_cast<ElsewhereDevice*> (p))
+            {
+                if (auto patch = own->getPatchName(); patch.isNotEmpty())
+                    d->setProperty ("patch", patch);
+
+                if (auto names = own->getPadNames(); ! names.isEmpty())
+                {
+                    juce::Array<juce::var> pads;
+                    for (auto& n : names)
+                        pads.add (n);
+                    d->setProperty ("pads", pads);
+                }
+            }
+
             d->setProperty ("knobs", knobs);
             devices.add (juce::var (d));
         }

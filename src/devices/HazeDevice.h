@@ -110,6 +110,16 @@ public:
 
     int getPatchIndex() const       { return (int) state.getProperty ("patch", -1); }
 
+    juce::String getPatchName() const override      { return patchLabel (getPatchIndex()) + (isPatchModified() ? " *" : ""); }
+
+    bool stepPatch (int delta) override
+    {
+        const int count = (int) patches().size();
+        const int index = getPatchIndex();
+        loadPatch (index < 0 ? (delta > 0 ? 0 : count - 1) : (index + delta + count) % count);
+        return true;
+    }
+
     static juce::String patchLabel (int index)
     {
         if (index < 0 || index >= (int) patches().size())

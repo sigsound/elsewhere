@@ -114,7 +114,7 @@ public:
         }
         wet.setTimeMs (3.0f, rate);     // cut in hard, like hardware, without clicking
         send.setTimeMs (8.0f, rate);
-        delayTime.setTimeMs (120.0f, rate);
+        delayTime.setTimeMs (25.0f, rate);   // a new time lands at once (a long glide felt like lag)
         delayTime.reset ((float) (rate * 0.25));
     }
 
