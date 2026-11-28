@@ -93,6 +93,12 @@ MainComponent::MainComponent (te::Engine& e, const juce::File& editFile, AppActi
             importFile (f, *target, project->getEdit().getTransport().getPosition());
     };
 
+    // A beat sent from the phone: it arrives at bar 1, as MIDI on the same sounds
+    somewhereLink->onBeat = [this] (const juce::File& folder, const juce::String& songId)
+    {
+        importSomewhereBeat (folder, te::TimePosition(), songId);
+    };
+
     // A take recorded on the phone: onto that phone's own track, at the beat it started
     somewhereLink->onTake = [this] (const juce::File& f, double beat, const juce::String& phoneName) -> juce::String
     {
@@ -566,7 +572,7 @@ void MainComponent::importAsNewTracks (juce::Array<juce::File> files, te::TimePo
     job->launchThread();
 }
 
-void MainComponent::importSomewhereBeat (const juce::File& folder, te::TimePosition start)
+void MainComponent::importSomewhereBeat (const juce::File& folder, te::TimePosition start, const juce::String& replacing)
 {
     auto beat = SomewhereBeat::read (folder);
 
@@ -578,7 +584,7 @@ void MainComponent::importSomewhereBeat (const juce::File& folder, te::TimePosit
         stems.add (s.file);
 
     auto safeThis = SafePointer<MainComponent> (this);
-    auto* job = new ImportJob (*project, stems, [safeThis, b = *beat, start] (juce::Array<juce::File> local)
+    auto* job = new ImportJob (*project, stems, [safeThis, b = *beat, start, replacing] (juce::Array<juce::File> local)
     {
         if (safeThis == nullptr)
             return;
@@ -586,8 +592,37 @@ void MainComponent::importSomewhereBeat (const juce::File& folder, te::TimePosit
         auto& edit = safeThis->project->getEdit();
         edit.getUndoManager().beginNewTransaction ("Import " + b.name);
         auto* proj = safeThis->project.get();
-        auto r = SomewhereBeat::build (edit, b, local, start, safeThis->getLastNonReturnTrack(),
+
+        // Sent again from the phone: its new tracks take the old ones' place (one undo step brings them back)
+        static const juce::Identifier sentAs ("somewhereSong");
+        te::Track* after = safeThis->getLastNonReturnTrack();
+        if (replacing.isNotEmpty())
+        {
+            juce::Array<te::Track*> old;
+            for (auto* t : te::getAudioTracks (edit))
+                if (t->state[sentAs].toString() == replacing)
+                    old.add (t);
+
+            if (! old.isEmpty())
+            {
+                after = old.getFirst()->getSiblingTrack (-1, false);
+                for (auto* t : old)
+                    edit.deleteTrack (t);
+            }
+        }
+
+        auto r = SomewhereBeat::build (edit, b, local, start, after,
                                        [proj, sounds = b.name + " Sounds"] (const juce::File& f) { return proj->importAudioFile (f, sounds); });
+
+        if (replacing.isNotEmpty())
+        {
+            juce::Array<te::AudioTrack*> made (r.stems);
+            made.addArray (r.keysBySound);
+            made.add (r.drums, r.keys);
+            for (auto* t : made)
+                if (t != nullptr)
+                    t->state.setProperty (sentAs, replacing, &edit.getUndoManager());
+        }
 
         if (auto* focus = r.drums != nullptr ? r.drums : r.keys != nullptr ? r.keys : r.stems.getFirst())
             safeThis->viewState->focusTrack (focus);

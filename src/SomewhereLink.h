@@ -369,6 +369,10 @@ public:
     /** Puts a dropped sample on the focused track at the playhead (MainComponent::importFile). */
     std::function<void (const juce::File&)> onSampleDropped;
 
+    /** A whole beat sent from the phone (Send to Elsewhere): its folder, saved in the project,
+        and the phone's id for the song, so sending it again replaces what it made last time. */
+    std::function<void (const juce::File& folder, const juce::String& songId)> onBeat;
+
     /** Puts a recorded take on the phone's track at a beat. Returns the track's name. */
     std::function<juce::String (const juce::File&, double beat, const juce::String& phoneName)> onTake;
 
@@ -727,6 +731,7 @@ private:
         else if (type == "pan")     setPan ((float) (double) msg["value"]);
         else if (type == "chaos")   moveChaos (*c, (float) (double) msg["x"], (float) (double) msg["y"], (bool) msg["touching"]);
         else if (type == "drop")    drop (*c, msg["name"].toString(), payload);
+        else if (type == "beat")    receiveBeat (*c, msg, payload);
         else if (type == "fx")      playFx (*c, msg);
     }
 
@@ -1186,6 +1191,49 @@ private:
     }
 
     //==============================================================================
+    /** "beat": the header lists the beat folder's files ({ path, size }, in order) and the payload is
+        their bytes, one after another. They're saved in the project, under the phone's folder, then imported. */
+    void receiveBeat (Connection& c, const juce::var& msg, const juce::MemoryBlock& payload)
+    {
+        auto reply = [&c] (const char* type, const juce::String& text)
+        {
+            auto m = message (type);
+            m.getDynamicObject()->setProperty (juce::String (type) == "error" ? "message" : "name", text);
+            c.send (encode (m));
+        };
+
+        auto folderName = juce::File::createLegalFileName (msg["folder"].toString().trim());
+        auto* files = msg["files"].getArray();
+
+        if (folderName.isEmpty() || files == nullptr || files->isEmpty())
+            return reply ("error", "Elsewhere couldn't read the beat.");
+
+        auto folder = project.getFolder().getChildFile ("Samples/Somewhere")
+                          .getChildFile (juce::File::createLegalFileName (c.name + " (" + c.tag + ")"))
+                          .getChildFile (folderName);
+        folder.deleteRecursively();     // sent again: this copy replaces the last
+
+        size_t offset = 0;
+        for (auto& f : *files)
+        {
+            auto path = f["path"].toString().replaceCharacter ('\\', '/');
+            auto size = (size_t) (juce::int64) f["size"];
+            if (path.isEmpty() || path.startsWithChar ('/') || path.contains ("..") || offset + size > payload.getSize())
+                return reply ("error", "Elsewhere couldn't read the beat.");
+
+            auto file = folder.getChildFile (path);
+            if (! file.isAChildOf (folder) || ! file.getParentDirectory().createDirectory()
+                 || ! file.replaceWithData (static_cast<const char*> (payload.getData()) + offset, size))
+                return reply ("error", "Elsewhere couldn't save the beat.");
+            offset += size;
+        }
+
+        if (onBeat)
+            onBeat (folder, msg["id"].toString().isNotEmpty() ? c.tag + "/" + msg["id"].toString() : juce::String());
+
+        reply ("beatReceived", project.getEditFile().getFileNameWithoutExtension());
+    }
+
     void drop (Connection& c, const juce::String& sampleName, const juce::MemoryBlock& wav)
     {
         auto reply = [&c] (const char* type, const juce::String& key, const juce::String& value, const juce::String& track = {})
