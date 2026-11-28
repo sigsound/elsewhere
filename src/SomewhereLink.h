@@ -612,8 +612,12 @@ private:
 
         // The track list as last sent, and the Somewhere Control the FX pad is playing
         juce::String lastTracks;
-        te::Plugin::Ptr fx;
+        juce::ReferenceCountedArray<te::Plugin> fx;     // one track's, or every track's with "all"
+        juce::String fxTarget;
         bool fxPlaying = false;
+
+        // A knob the phone is turning (one gesture, so AUTO records it)
+        te::AutomatableParameter::Ptr knob;
     };
 
     //==============================================================================
@@ -699,6 +703,7 @@ private:
         {
             endChaos (*c);
             endFx (*c);
+            endKnob (*c);
             monitor->close (id);
             connections.removeObject (c);
         }
@@ -733,6 +738,11 @@ private:
         else if (type == "drop")    drop (*c, msg["name"].toString(), payload);
         else if (type == "beat")    receiveBeat (*c, msg, payload);
         else if (type == "fx")      playFx (*c, msg);
+        else if (type == "select")  selectTrack (msg["track"]);
+        else if (type == "mute")    setSwitch (*c, "mute", (bool) msg["on"]);
+        else if (type == "solo")    setSwitch (*c, "solo", (bool) msg["on"]);
+        else if (type == "arm")     setSwitch (*c, "arm", (bool) msg["on"]);
+        else if (type == "knob")    turnKnob (*c, msg);
     }
 
     /** Phones you've allowed. ELSEWHERE_SOMEWHERE_TRUST=<tag> pre-allows one (for scripted tests). */
@@ -824,6 +834,13 @@ private:
             o->setProperty ("position", vp->getSliderPos());
             o->setProperty ("pan", vp->getPan());
         }
+
+        o->setProperty ("id", t->itemID.toString());
+        o->setProperty ("mute", t->isMuted (false));
+        o->setProperty ("solo", t->isSolo (false));
+        if (auto* at = dynamic_cast<te::AudioTrack*> (t))
+            o->setProperty ("armed", EngineHelpers::isTrackArmed (*at));
+        o->setProperty ("devices", deviceList (*t));
 
         auto chaos = findChaosTargets (*t);
         if (chaos.x != nullptr && chaos.y != nullptr)
@@ -1007,6 +1024,118 @@ private:
     }
 
     //==============================================================================
+    // The remote: pick a channel, then its switches and its devices' knobs
+
+    static constexpr int maxKnobsPerDevice = 48;
+
+    /** The track's devices and their knobs: { id, name, on, knobs: [{ id, name, value 0..1, text, states }] }.
+        The mixer's own volume and meter aren't devices here; the fader and pan cover them. */
+    static juce::var deviceList (te::Track& t)
+    {
+        juce::Array<juce::var> devices;
+
+        for (auto* p : t.pluginList)
+        {
+            if (dynamic_cast<te::VolumeAndPanPlugin*> (p) != nullptr || dynamic_cast<te::LevelMeterPlugin*> (p) != nullptr)
+                continue;
+
+            juce::Array<juce::var> knobs;
+            for (auto* ap : p->getAutomatableParameters())
+            {
+                if (knobs.size() >= maxKnobsPerDevice)
+                    break;
+
+                auto* k = new juce::DynamicObject();
+                k->setProperty ("id", ap->paramID);
+                k->setProperty ("name", ap->getParameterName());
+                k->setProperty ("value", ap->getCurrentNormalisedValue());
+                k->setProperty ("text", ap->getCurrentValueAsStringWithLabel());
+                if (ap->isDiscrete())
+                    k->setProperty ("states", ap->getNumberOfStates());
+                knobs.add (juce::var (k));
+            }
+
+            auto* d = new juce::DynamicObject();
+            d->setProperty ("id", p->itemID.toString());
+            d->setProperty ("name", p->getName());
+            d->setProperty ("on", p->isEnabled());
+            d->setProperty ("knobs", knobs);
+            devices.add (juce::var (d));
+        }
+
+        return devices;
+    }
+
+    /** select { track }: the phone switches channel; Elsewhere selects that track too. */
+    void selectTrack (const juce::var& id)
+    {
+        const auto itemID = te::EditItemID::fromVar (id);
+        for (auto* t : te::getAllTracks (project.getEdit()))
+            if (t->itemID == itemID && ! t->isMasterTrack())
+                return viewState.focusTrack (t);
+    }
+
+    /** mute / solo / arm { on }, on the selected track. */
+    void setSwitch (Connection& c, const juce::String& which, bool on)
+    {
+        auto* t = target();
+        if (t == nullptr)
+            return;
+
+        c.lastFaderMove = juce::Time::getCurrentTime();
+        t->edit.getUndoManager().beginNewTransaction ("Somewhere " + which);
+
+        if (which == "mute")        t->setMute (on);
+        else if (which == "solo")   t->setSolo (on);
+        else if (auto* at = dynamic_cast<te::AudioTrack*> (t))
+            EngineHelpers::armTrack (*at, on);
+    }
+
+    /** knob { device, id, value 0..1, touching }: a device's control on the selected track. A touch is
+        one undo step and one gesture; a value with touching false is a single change (a tap on a switch). */
+    void turnKnob (Connection& c, const juce::var& msg)
+    {
+        auto* t = target();
+        const bool touching = (bool) msg["touching"];
+        auto v = msg["value"];
+        const bool hasValue = v.isDouble() || v.isInt() || v.isInt64();
+
+        te::AutomatableParameter::Ptr param;
+        if (t != nullptr)
+            for (auto* p : t->pluginList)
+                if (p->itemID == te::EditItemID::fromVar (msg["device"]))
+                    param = p->getAutomatableParameterByID (msg["id"].toString());
+
+        if (param != c.knob)
+            endKnob (c);
+
+        if (param == nullptr)
+            return;
+
+        c.lastFaderMove = juce::Time::getCurrentTime();
+
+        if (c.knob == nullptr)
+        {
+            t->edit.getUndoManager().beginNewTransaction ("Somewhere " + param->getParameterName());
+            param->parameterChangeGestureBegin();
+            c.knob = param;
+        }
+
+        if (hasValue && std::isfinite ((double) v))
+            param->setNormalisedParameter (juce::jlimit (0.0f, 1.0f, (float) (double) v), juce::sendNotification);
+
+        if (! touching)
+            endKnob (c);
+    }
+
+    void endKnob (Connection& c)
+    {
+        if (c.knob != nullptr)
+            c.knob->parameterChangeGestureEnd();
+        c.knob = nullptr;
+    }
+
+    //==============================================================================
     void setFader (Connection& c, float position)
     {
         if (auto* t = target())
@@ -1107,12 +1236,14 @@ private:
         A touch (on, until off) is one undo step, and its moves are one gesture, so AUTO records them. */
     void playFx (Connection& c, const juce::var& msg)
     {
-        const auto id = te::EditItemID::fromVar (msg["track"]);
-        te::AudioTrack* track = nullptr;
+        // "all": every track that has Somewhere Control; otherwise one track, which gets one on first touch
+        const auto target = msg["track"].toString();
+        const bool all = target == "all";
+        juce::Array<te::AudioTrack*> tracks;
 
         for (auto* t : te::getAudioTracks (project.getEdit()))
-            if (t->itemID == id)
-                track = t;
+            if (all ? SomewhereControlDevice::findOn (*t) != nullptr : t->itemID == te::EditItemID::fromVar (msg["track"]))
+                tracks.add (t);
 
         auto number = [&msg] (const char* key, double lo, double hi, double fallback)
         {
@@ -1125,32 +1256,47 @@ private:
 
         const bool on = (bool) msg["on"];
 
-        // A different track (or none) ends what the pad was playing
-        if (c.fx != nullptr && (track == nullptr || SomewhereControlDevice::findOn (*track) != c.fx.get()))
+        // A different target ends what the pad was playing
+        if (c.fxPlaying && c.fxTarget != target)
             endFx (c);
 
-        if (track == nullptr)
+        if (tracks.isEmpty())
             return;
 
-        auto* d = SomewhereControlDevice::findOn (*track);
+        juce::ReferenceCountedArray<te::Plugin> devices;
 
-        if (d == nullptr && ! on)
-            return;     // nothing to stop, and no reason to add one
-
-        if (! c.fxPlaying)
-            track->edit.getUndoManager().beginNewTransaction ("Somewhere FX");
-
-        if (! c.fxPlaying && on)
+        if (c.fxPlaying)
         {
+            devices = c.fx;
+        }
+        else
+        {
+            if (on)
+                tracks.getFirst()->edit.getUndoManager().beginNewTransaction ("Somewhere FX");
 
-            if (d == nullptr && (d = SomewhereControlDevice::findOrAddTo (*track)) == nullptr)
-                return;
+            for (auto* t : tracks)
+            {
+                te::Plugin* d = SomewhereControlDevice::findOn (*t);
+                if (d == nullptr && on && ! all)
+                    d = SomewhereControlDevice::findOrAddTo (*t);
+                if (d != nullptr)
+                    devices.add (d);
+            }
 
-            c.fx = d;
-            c.fxPlaying = true;
+            if (devices.isEmpty())
+                return;     // nothing to stop, and no reason to add one
 
-            for (auto* p : { &d->effect.param(), &d->x.param(), &d->y.param(), &d->on.param() })
-                p->parameterChangeGestureBegin();
+            if (on)
+            {
+                c.fx = devices;
+                c.fxTarget = target;
+                c.fxPlaying = true;
+
+                for (auto* p : devices)
+                    if (auto* d = dynamic_cast<SomewhereControlDevice*> (p))
+                        for (auto* ap : { &d->effect.param(), &d->x.param(), &d->y.param(), &d->on.param() })
+                            ap->parameterChangeGestureBegin();
+            }
         }
 
         auto set = [] (ElsewhereDevice::Param p, float v)
@@ -1159,12 +1305,19 @@ private:
                 p.param().setParameter (v, juce::sendNotification);
         };
 
-        set (d->effect, (float) juce::roundToInt (number ("effect", 0, PerformanceFx::numEffects - 1, d->getEffect())));
-        set (d->x, (float) number ("x", 0, 1, d->x.get()));
-        set (d->y, (float) number ("y", 0, 1, d->y.get()));
-        set (d->on, on ? 1.0f : 0.0f);
-        d->remoteName = c.name;
-        d->lastRemoteMove = juce::Time::getCurrentTime();
+        for (auto* p : devices)
+        {
+            auto* d = dynamic_cast<SomewhereControlDevice*> (p);
+            if (d == nullptr)
+                continue;
+
+            set (d->effect, (float) juce::roundToInt (number ("effect", 0, PerformanceFx::numEffects - 1, d->getEffect())));
+            set (d->x, (float) number ("x", 0, 1, d->x.get()));
+            set (d->y, (float) number ("y", 0, 1, d->y.get()));
+            set (d->on, on ? 1.0f : 0.0f);
+            d->remoteName = c.name;
+            d->lastRemoteMove = juce::Time::getCurrentTime();
+        }
 
         if (! on)
             endFx (c);
@@ -1173,20 +1326,21 @@ private:
     /** The pad let go (or the phone went, or picked another track): stop the effect. */
     void endFx (Connection& c)
     {
-        if (c.fx == nullptr)
-            return;
-
-        if (auto* d = dynamic_cast<SomewhereControlDevice*> (c.fx.get()))
+        for (auto* p : c.fx)
         {
-            if (d->on.get() > 0.5f)
-                d->on.param().setParameter (0.0f, juce::sendNotification);
+            if (auto* d = dynamic_cast<SomewhereControlDevice*> (p))
+            {
+                if (d->on.get() > 0.5f)
+                    d->on.param().setParameter (0.0f, juce::sendNotification);
 
-            if (c.fxPlaying)
-                for (auto* p : { &d->effect.param(), &d->x.param(), &d->y.param(), &d->on.param() })
-                    p->parameterChangeGestureEnd();
+                if (c.fxPlaying)
+                    for (auto* ap : { &d->effect.param(), &d->x.param(), &d->y.param(), &d->on.param() })
+                        ap->parameterChangeGestureEnd();
+            }
         }
 
-        c.fx = nullptr;
+        c.fx.clear();
+        c.fxTarget = {};
         c.fxPlaying = false;
     }
 
