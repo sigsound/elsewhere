@@ -221,7 +221,7 @@ public:
                 || args.contains ("--dawproject-test") || args.contains ("--aaf-test") || args.contains ("--import-test")
                 || args.contains ("--ableton-test") || args.contains ("--cubase-test") || args.contains ("--perf-test") || args.contains ("--record-test")
                 || args.contains ("--project-audio-test") || args.contains ("--takes-test") || args.contains ("--midi-lanes-test") || args.contains ("--routing-test") || args.contains ("--surfaces-test") || args.contains ("--export-test")
-                || args.contains ("--mastering-test") || args.contains ("--accessibility-test");
+                || args.contains ("--mastering-test") || args.contains ("--accessibility-test") || args.contains ("--showcase");
     }
 
     void initialise (const juce::String& commandLine) override

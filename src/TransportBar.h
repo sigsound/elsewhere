@@ -444,11 +444,10 @@ public:
             return;
 
         backToAlbumName = albumName;
-        auto label = juce::String::fromUTF8 ("\xe2\x86\xa9 Back to ") + albumName;
-        backToAlbum.setButtonText (label);
         backToAlbum.setTitle ("Back to " + albumName);
         backToAlbum.setTooltip ("Go back to the mastering project " + albumName + ". If you saved changes to this song, the album plays them once its render is updated.");
         updateSideButtons();
+        resized();
     }
 
     std::function<void()> onBackToAlbum;
@@ -520,17 +519,23 @@ public:
 
         viewToggle.setBounds (small (r.removeFromRight (76)));
         r.removeFromRight (8);
-        cpu.setBounds (r.removeFromRight (dropouts > 0 ? 150 : 64));
-
         // The transport gets its room first; the status (or Back to Arrangement, which shows
-        // in its place) has what's left, up to 180
+        // in its place) has what's left, up to 180. A song from an album always keeps a way
+        // back: when there's no room for it, it takes the CPU meter's place (not a dropout count)
         const int centreW = quantBox.isVisible() ? 800 : 710;
-        auto side = r.removeFromRight (juce::jlimit (0, 180, r.getWidth() - centreW));
+        int cpuW = dropouts > 0 ? 150 : 64;
+        if (backToAlbum.isVisible() && dropouts == 0 && r.getWidth() - cpuW - centreW < backToAlbumMinWidth() + 8)
+            cpuW = 0;
+        cpu.setBounds (cpuW > 0 ? r.removeFromRight (cpuW) : juce::Rectangle<int>());
+
+        const int sideW = juce::jlimit (0, 180, r.getWidth() - centreW);
+        auto side = r.removeFromRight (backToAlbum.isVisible() && cpuW == 0
+                                         ? juce::jlimit (0, r.getWidth(), juce::jmax (sideW, backToAlbumMinWidth() + 8))
+                                         : sideW);
         status.setBounds (side.getWidth() >= 70 ? side : juce::Rectangle<int>());
         collaboratorInfo.setBounds (side);
         backToArrangement.setBounds (side.withSizeKeepingCentre (juce::jmin (side.getWidth(), 160), h));
-        auto albumSide = side.withTrimmedLeft (8);
-        backToAlbum.setBounds (albumSide.withSizeKeepingCentre (juce::jmin (albumSide.getWidth(), backToAlbum.getBestWidthForHeight (26) + 8), 26));
+        layOutBackToAlbum (side.withTrimmedLeft (8));
 
         auto centre = r.withSizeKeepingCentre (juce::jmin (r.getWidth(), centreW), h);
 
@@ -545,19 +550,19 @@ public:
         position.setBounds (centre.removeFromLeft (170));
         centre.removeFromLeft (4);
 
-        punchButton.setBounds (small (centre.removeFromLeft (46)));
-        centre.removeFromLeft (12);
-        automationArm.setBounds (small (centre.removeFromLeft (44)));
-        centre.removeFromLeft (4);
-        midiLearn.setBounds (small (centre.removeFromLeft (44)));
-        centre.removeFromLeft (4);
-        liveButton.setBounds (small (centre.removeFromLeft (40)));
-        centre.removeFromLeft (12);
-        editModeBox.setBounds (small (centre.removeFromLeft (80)));
-        centre.removeFromLeft (4);
-        gridBox.setBounds (small (centre.removeFromLeft (80)));
-        centre.removeFromLeft (4);
-        quantBox.setBounds (small (centre.removeFromLeft (80)));
+        // In a narrow window the controls that don't fit whole are left out, not cut in half
+        auto place = [&] (juce::Component& c, int w, int gapAfter)
+        {
+            c.setBounds (centre.getWidth() >= w ? small (centre.removeFromLeft (w)) : juce::Rectangle<int>());
+            centre.removeFromLeft (juce::jmin (gapAfter, centre.getWidth()));
+        };
+        place (punchButton, 46, 12);
+        place (automationArm, 44, 4);
+        place (midiLearn, 44, 4);
+        place (liveButton, 40, 12);
+        place (editModeBox, 80, 4);
+        place (gridBox, 80, 4);
+        place (quantBox, 80, 0);
     }
 
 private:
@@ -583,10 +588,41 @@ private:
     juce::TextButton backToAlbum;
     juce::String backToAlbumName;
 
+    /** The width "Back" needs (the arrow-alone fallback is for windows too narrow even for that). */
+    int backToAlbumMinWidth()
+    {
+        const auto text = backToAlbum.getButtonText();
+        backToAlbum.setButtonText (juce::String::fromUTF8 ("\xe2\x86\xa9 Back"));
+        const int w = backToAlbum.getBestWidthForHeight (26) + 8;
+        backToAlbum.setButtonText (text);
+        return w;
+    }
+
+    /** The longest label that fits: "Back to <album>", then "Back", then the arrow alone.
+        The title and tooltip always name the album. */
+    void layOutBackToAlbum (juce::Rectangle<int> area)
+    {
+        const auto arrow = juce::String::fromUTF8 ("\xe2\x86\xa9");
+        const juce::String labels[] { arrow + " Back to " + backToAlbumName, arrow + " Back", arrow };
+        int w = 0;
+        for (auto& label : labels)
+        {
+            backToAlbum.setButtonText (label);
+            w = backToAlbum.getBestWidthForHeight (26) + 8;
+            if (w <= area.getWidth())
+                break;
+        }
+        w = juce::jmax (w, 26);
+        backToAlbum.setBounds (area.getWidth() >= w ? area.withSizeKeepingCentre (w, 26) : juce::Rectangle<int>());
+    }
+
     /** One thing has the space beside the transport: Back to Arrangement, then Back to Album, then the status. */
     void updateSideButtons()
     {
+        const bool wasShowing = backToAlbum.isVisible();
         backToAlbum.setVisible (backToAlbumName.isNotEmpty() && ! backToArrangement.isVisible());
+        if (backToAlbum.isVisible() != wasShowing)
+            resized();
         status.setVisible (collaborators.empty() && ! backToArrangement.isVisible() && ! backToAlbum.isVisible());
     }
     juce::Array<double> tapTimes;
